@@ -47,6 +47,19 @@
       <button id="compare-btn" class="btn" disabled>Compare Selected Dates</button>
     </section>
 
+    <!-- ROI Selection -->
+    <section id="roi-section" class="hidden">
+      <div class="roi-header">
+        <h2>Region of Interest</h2>
+        <button id="clear-roi-btn" class="btn btn-sm hidden">Clear ROI</button>
+      </div>
+      <p class="hint">Click and drag on Image A below to select the wall region you want to analyze. Only cells inside the rectangle will be included in the comparison.</p>
+      <div class="roi-canvas-wrapper">
+        <canvas id="roi-canvas"></canvas>
+      </div>
+      <p id="roi-status" class="roi-status">No ROI selected &mdash; full image will be analyzed</p>
+    </section>
+
     <!-- Summary Stats -->
     <section id="stats-section" class="hidden">
       <h2>Summary</h2>
@@ -86,6 +99,26 @@
           <h3>Change Heatmap</h3>
           <div class="img-wrapper">
             <canvas id="canvas-diff"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Side-by-Side Detail View -->
+    <section id="detail-section" class="hidden">
+      <h2>Side-by-Side Detail View</h2>
+      <p class="hint">Raw images at full pixel detail for visual inspection. Cropped to ROI when active.</p>
+      <div class="detail-row">
+        <div class="detail-col">
+          <h3 id="detail-label-a">Image A</h3>
+          <div class="detail-img-wrapper">
+            <canvas id="detail-canvas-a"></canvas>
+          </div>
+        </div>
+        <div class="detail-col">
+          <h3 id="detail-label-b">Image B</h3>
+          <div class="detail-img-wrapper">
+            <canvas id="detail-canvas-b"></canvas>
           </div>
         </div>
       </div>

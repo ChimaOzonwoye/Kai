@@ -359,3 +359,83 @@ input[type="range"] {
 .severity-low { background: rgba(255, 199, 0, 0.2); color: #ffc700; }
 .severity-medium { background: rgba(255, 140, 0, 0.2); color: #ff8c00; }
 .severity-high { background: rgba(255, 71, 87, 0.2); color: #ff4757; }
+
+/* ── ROI Selection ── */
+.roi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.roi-header h2 {
+  margin-bottom: 0;
+}
+
+.roi-canvas-wrapper {
+  background: #111;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: crosshair;
+  margin-top: 10px;
+}
+
+.roi-canvas-wrapper canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.roi-status {
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: #666;
+  margin-top: 8px;
+}
+
+.btn-sm {
+  padding: 6px 14px;
+  font-size: 12px;
+  background: #8a1a1a;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-sm:hover {
+  background: #a52a2a;
+}
+
+/* ── Side-by-Side Detail View ── */
+.detail-row {
+  display: flex;
+  gap: 12px;
+}
+
+.detail-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.detail-col h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.detail-img-wrapper {
+  background: #111;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 600px;
+  position: relative;
+}
+
+.detail-img-wrapper canvas {
+  display: block;
+  image-rendering: pixelated;
+}

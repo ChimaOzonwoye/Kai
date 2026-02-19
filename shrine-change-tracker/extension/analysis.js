@@ -19,6 +19,14 @@ let selectedA = null; // index
 let selectedB = null; // index
 let comparisonResult = null;
 
+// ── ROI State ──
+let roi = null; // { x, y, w, h } in image pixel coordinates (800×400 space)
+let roiDragging = false;
+let roiStartX = 0;
+let roiStartY = 0;
+let roiImage = null;
+let lastRoiPanoA = null;
+
 // ── DOM refs ──
 const loading = document.getElementById("loading");
 const loadingText = document.getElementById("loading-text");
@@ -30,6 +38,12 @@ const cellSizeSlider = document.getElementById("cell-size");
 const cellSizeVal = document.getElementById("cell-size-val");
 const thresholdSlider = document.getElementById("threshold");
 const thresholdVal = document.getElementById("threshold-val");
+
+// ROI DOM refs
+const roiCanvas = document.getElementById("roi-canvas");
+const roiCtx = roiCanvas.getContext("2d");
+const clearRoiBtn = document.getElementById("clear-roi-btn");
+const roiStatusEl = document.getElementById("roi-status");
 
 // ── Helpers ──
 function thumbnailUrl(panoId, w = 160, h = 80) {
@@ -52,6 +66,140 @@ cellSizeSlider.addEventListener("input", () => {
 thresholdSlider.addEventListener("input", () => {
   thresholdVal.textContent = thresholdSlider.value;
 });
+
+// ── ROI Selection ──
+function showRoiSection() {
+  document.getElementById("roi-section").classList.remove("hidden");
+  const panoId = panoramas[selectedA].pano_id;
+  if (panoId !== lastRoiPanoA) {
+    lastRoiPanoA = panoId;
+    loadRoiImage();
+  }
+}
+
+function loadRoiImage() {
+  if (selectedA === null) return;
+  const panoId = panoramas[selectedA].pano_id;
+  const url = `${SERVER}/thumbnail?pano_id=${panoId}&heading=${HEADING}&pitch=${PITCH}&w=800&h=400`;
+
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    roiImage = img;
+    roiCanvas.width = img.width;
+    roiCanvas.height = img.height;
+    drawRoiCanvas();
+  };
+  img.src = url;
+}
+
+function drawRoiCanvas() {
+  if (!roiImage) return;
+  roiCtx.drawImage(roiImage, 0, 0);
+
+  if (roi) {
+    // Dim outside ROI
+    roiCtx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    roiCtx.fillRect(0, 0, roiCanvas.width, roi.y);
+    roiCtx.fillRect(0, roi.y + roi.h, roiCanvas.width, roiCanvas.height - roi.y - roi.h);
+    roiCtx.fillRect(0, roi.y, roi.x, roi.h);
+    roiCtx.fillRect(roi.x + roi.w, roi.y, roiCanvas.width - roi.x - roi.w, roi.h);
+
+    // ROI border (dashed blue)
+    roiCtx.strokeStyle = "#4a69bd";
+    roiCtx.lineWidth = 2;
+    roiCtx.setLineDash([6, 3]);
+    roiCtx.strokeRect(roi.x, roi.y, roi.w, roi.h);
+    roiCtx.setLineDash([]);
+
+    // Corner handles
+    const hs = 8;
+    roiCtx.fillStyle = "#4a69bd";
+    roiCtx.fillRect(roi.x - hs / 2, roi.y - hs / 2, hs, hs);
+    roiCtx.fillRect(roi.x + roi.w - hs / 2, roi.y - hs / 2, hs, hs);
+    roiCtx.fillRect(roi.x - hs / 2, roi.y + roi.h - hs / 2, hs, hs);
+    roiCtx.fillRect(roi.x + roi.w - hs / 2, roi.y + roi.h - hs / 2, hs, hs);
+
+    // Dimension label
+    roiCtx.fillStyle = "rgba(74, 105, 189, 0.85)";
+    roiCtx.fillRect(roi.x, roi.y - 22, 120, 20);
+    roiCtx.fillStyle = "#fff";
+    roiCtx.font = "12px monospace";
+    roiCtx.fillText(`${roi.w} × ${roi.h} px`, roi.x + 4, roi.y - 7);
+  }
+}
+
+function getCanvasCoords(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top) * scaleY,
+  };
+}
+
+roiCanvas.addEventListener("mousedown", (e) => {
+  const pos = getCanvasCoords(e, roiCanvas);
+  roiStartX = pos.x;
+  roiStartY = pos.y;
+  roiDragging = true;
+});
+
+roiCanvas.addEventListener("mousemove", (e) => {
+  if (!roiDragging) return;
+  const pos = getCanvasCoords(e, roiCanvas);
+  const clampedX = Math.max(0, Math.min(pos.x, roiCanvas.width));
+  const clampedY = Math.max(0, Math.min(pos.y, roiCanvas.height));
+
+  roi = {
+    x: Math.round(Math.min(roiStartX, clampedX)),
+    y: Math.round(Math.min(roiStartY, clampedY)),
+    w: Math.round(Math.abs(clampedX - roiStartX)),
+    h: Math.round(Math.abs(clampedY - roiStartY)),
+  };
+
+  drawRoiCanvas();
+});
+
+roiCanvas.addEventListener("mouseup", () => {
+  if (!roiDragging) return;
+  roiDragging = false;
+
+  if (roi && roi.w > 10 && roi.h > 10) {
+    updateRoiStatus();
+    clearRoiBtn.classList.remove("hidden");
+  } else {
+    roi = null;
+    updateRoiStatus();
+  }
+});
+
+function updateRoiStatus() {
+  if (roi) {
+    roiStatusEl.textContent = `ROI: (${roi.x}, ${roi.y}) → (${roi.x + roi.w}, ${roi.y + roi.h})  |  ${roi.w} × ${roi.h} px`;
+    roiStatusEl.style.color = "#4a69bd";
+  } else {
+    roiStatusEl.textContent = "No ROI selected — full image will be analyzed";
+    roiStatusEl.style.color = "#666";
+    clearRoiBtn.classList.add("hidden");
+  }
+}
+
+function clearRoi() {
+  roi = null;
+  updateRoiStatus();
+  drawRoiCanvas();
+}
+
+clearRoiBtn.addEventListener("click", clearRoi);
+
+function isCellInRoi(cell) {
+  if (!roi) return true;
+  const cx = cell.x + cell.w / 2;
+  const cy = cell.y + cell.h / 2;
+  return cx >= roi.x && cx <= roi.x + roi.w && cy >= roi.y && cy <= roi.y + roi.h;
+}
 
 // ── Step 1: Search panoramas ──
 async function searchPanoramas() {
@@ -124,6 +272,11 @@ function refreshSelectionUI() {
     items[selectedB].classList.add("selected-b");
   }
   compareBtn.disabled = selectedA === null || selectedB === null || selectedA === selectedB;
+
+  // Show ROI section when both dates are selected
+  if (selectedA !== null && selectedB !== null && selectedA !== selectedB) {
+    showRoiSection();
+  }
 }
 
 function onTimelineClick(idx) {
@@ -170,10 +323,16 @@ async function runComparison() {
 function renderResults() {
   const r = comparisonResult;
 
-  // Stats
-  document.getElementById("stat-total").textContent = r.total_cells.toLocaleString();
-  document.getElementById("stat-changed").textContent = r.changed_cells.toLocaleString();
-  document.getElementById("stat-pct").textContent = r.change_pct + "%";
+  // Filter cells by ROI
+  const roiCells = r.cells.filter(isCellInRoi);
+  const roiChangedCount = roiCells.filter((c) => c.changed).length;
+  const roiTotal = roiCells.length;
+  const roiPct = roiTotal > 0 ? ((roiChangedCount / roiTotal) * 100).toFixed(1) : "0.0";
+
+  // Stats (ROI-filtered)
+  document.getElementById("stat-total").textContent = roiTotal.toLocaleString();
+  document.getElementById("stat-changed").textContent = roiChangedCount.toLocaleString();
+  document.getElementById("stat-pct").textContent = roiPct + "%";
   document.getElementById("stat-grid").textContent = `${r.grid_cols} x ${r.grid_rows}`;
   document.getElementById("stats-section").classList.remove("hidden");
 
@@ -181,18 +340,22 @@ function renderResults() {
   document.getElementById("label-a").textContent = `Image A — ${panoramas[selectedA].date}`;
   document.getElementById("label-b").textContent = `Image B — ${panoramas[selectedB].date}`;
 
-  // Load overlay images onto canvases
+  // Load overlay images onto canvases (with ROI dimming)
   loadImageToCanvas("canvas-a", `${SERVER}${r.overlay_a_url}`, r);
   loadImageToCanvas("canvas-b", `${SERVER}${r.overlay_b_url}`, r);
   loadImageToCanvas("canvas-diff", `${SERVER}${r.diff_map_url}`, r);
   document.getElementById("comparison-section").classList.remove("hidden");
   document.getElementById("cell-detail").classList.remove("hidden");
 
-  // Build grid table
+  // Side-by-side detail view (raw images, cropped to ROI)
+  loadDetailView();
+  document.getElementById("detail-section").classList.remove("hidden");
+
+  // Build grid table (with ROI graying)
   buildGridTable(r);
   document.getElementById("grid-section").classList.remove("hidden");
 
-  // Build changed cells list
+  // Build changed cells list (ROI-filtered)
   buildChangedList(r);
   document.getElementById("changed-list-section").classList.remove("hidden");
 }
@@ -206,24 +369,35 @@ function loadImageToCanvas(canvasId, url, result) {
     canvas.width = img.width;
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
+
+    // Draw ROI overlay: dim area outside ROI
+    if (roi) {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.fillRect(0, 0, canvas.width, roi.y);
+      ctx.fillRect(0, roi.y + roi.h, canvas.width, canvas.height - roi.y - roi.h);
+      ctx.fillRect(0, roi.y, roi.x, roi.h);
+      ctx.fillRect(roi.x + roi.w, roi.y, canvas.width - roi.x - roi.w, roi.h);
+
+      ctx.strokeStyle = "#4a69bd";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 3]);
+      ctx.strokeRect(roi.x, roi.y, roi.w, roi.h);
+      ctx.setLineDash([]);
+    }
   };
   img.src = url;
 
   // Hover handler
-  canvas.addEventListener("mousemove", (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+  canvas.onmousemove = (e) => {
+    const pos = getCanvasCoords(e, canvas);
     const cellSize = parseInt(cellSizeSlider.value);
-    const col = Math.floor(x / cellSize);
-    const row = Math.floor(y / cellSize);
+    const col = Math.floor(pos.x / cellSize);
+    const row = Math.floor(pos.y / cellSize);
     const cell = result.cells.find((c) => c.row === row && c.col === col);
     if (cell) {
       updateCellDetail(cell);
     }
-  });
+  };
 }
 
 function updateCellDetail(cell) {
@@ -258,14 +432,18 @@ function buildGridTable(result) {
       const td = document.createElement("td");
       const cell = grid[r] && grid[r][c];
       if (cell) {
-        if (!cell.changed) {
+        const inRoi = isCellInRoi(cell);
+        if (!inRoi) {
+          td.style.background = "#1a1a2e";
+          td.style.opacity = "0.25";
+        } else if (!cell.changed) {
           td.style.background = "#1a5c2a"; // green
         } else if (cell.diff < 25) {
           td.style.background = "#8a7a00"; // yellow
         } else {
           td.style.background = "#8a1a1a"; // red
         }
-        td.title = `${cell.label}  Diff: ${cell.diff}`;
+        td.title = `${cell.label}  Diff: ${cell.diff}${inRoi ? "" : "  (outside ROI)"}`;
         td.addEventListener("mouseenter", () => updateCellDetail(cell));
       }
       tr.appendChild(td);
@@ -281,7 +459,7 @@ function buildChangedList(result) {
   list.innerHTML = "";
 
   const changed = result.cells
-    .filter((c) => c.changed)
+    .filter((c) => c.changed && isCellInRoi(c))
     .sort((a, b) => b.diff - a.diff);
 
   document.getElementById("changed-count").textContent = changed.length;
@@ -309,6 +487,47 @@ function buildChangedList(result) {
     `;
     list.appendChild(item);
   });
+}
+
+// ── Side-by-Side Detail View ──
+function loadDetailView() {
+  const dateA = panoramas[selectedA].date;
+  const dateB = panoramas[selectedB].date;
+  document.getElementById("detail-label-a").textContent = `Image A — ${dateA}`;
+  document.getElementById("detail-label-b").textContent = `Image B — ${dateB}`;
+
+  const urlA = `${SERVER}/thumbnail?pano_id=${panoramas[selectedA].pano_id}&heading=${HEADING}&pitch=${PITCH}&w=800&h=400`;
+  const urlB = `${SERVER}/thumbnail?pano_id=${panoramas[selectedB].pano_id}&heading=${HEADING}&pitch=${PITCH}&w=800&h=400`;
+
+  loadDetailCanvas("detail-canvas-a", urlA);
+  loadDetailCanvas("detail-canvas-b", urlB);
+}
+
+function loadDetailCanvas(canvasId, url) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    if (roi) {
+      // Crop to ROI and scale up 2x for pixel detail
+      const scale = 2;
+      canvas.width = roi.w * scale;
+      canvas.height = roi.h * scale;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(
+        img,
+        roi.x, roi.y, roi.w, roi.h,   // source rect
+        0, 0, roi.w * scale, roi.h * scale  // dest rect (2x zoom)
+      );
+    } else {
+      // No ROI: show full image at native resolution
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+    }
+  };
+  img.src = url;
 }
 
 // ── Compare button ──
