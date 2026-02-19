@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Shrine Change Tracker",
+  "version": "1.0.0",
+  "description": "Detect visual changes at street-level locations over time using Google Street View historical imagery.",
+  "permissions": ["activeTab", "tabs", "storage"],
+  "host_permissions": ["http://localhost:5000/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

@@ -1,0 +1,8 @@
+flask
+flask-cors
+streetview
+opencv-python
+scikit-image
+requests
+numpy
+Pillow
