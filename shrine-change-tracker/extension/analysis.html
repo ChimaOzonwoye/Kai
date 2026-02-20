@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shrine Change Tracker - Analysis</title>
+  <link rel="stylesheet" href="analysis.css">
+</head>
+<body>
+  <!-- Info Bar -->
+  <header id="info-bar">
+    <h1>Shrine Change Tracker</h1>
+    <div class="coords">
+      <span id="info-lat"></span>
+      <span id="info-lng"></span>
+      <span id="info-heading"></span>
+      <span id="info-pitch"></span>
+    </div>
+  </header>
+
+  <!-- Loading Overlay -->
+  <div id="loading" class="loading-overlay">
+    <div class="spinner"></div>
+    <p id="loading-text">Searching for panoramas...</p>
+  </div>
+
+  <!-- Main Content -->
+  <main id="main-content" class="hidden">
+
+    <!-- Timeline -->
+    <section id="timeline-section">
+      <h2>Timeline <span id="pano-count" class="badge"></span></h2>
+      <p class="hint">Click one thumbnail for Image A (red), click another for Image B (green).</p>
+      <div id="timeline" class="timeline-strip"></div>
+    </section>
+
+    <!-- Controls -->
+    <section id="controls-section">
+      <div class="control-group">
+        <label>Cell Size: <strong id="cell-size-val">15</strong>px</label>
+        <input type="range" id="cell-size" min="5" max="50" value="15" step="1">
+      </div>
+      <div class="control-group">
+        <label>Sensitivity Threshold: <strong id="threshold-val">12</strong></label>
+        <input type="range" id="threshold" min="1" max="50" value="12" step="1">
+      </div>
+      <button id="compare-btn" class="btn" disabled>Compare Selected Dates</button>
+    </section>
+
+    <!-- ROI Selection -->
+    <section id="roi-section" class="hidden">
+      <div class="roi-header">
+        <h2>Region of Interest</h2>
+        <button id="clear-roi-btn" class="btn btn-sm hidden">Clear ROI</button>
+      </div>
+      <p class="hint">Click and drag on Image A below to select the wall region you want to analyze. Only cells inside the rectangle will be included in the comparison.</p>
+      <div class="roi-canvas-wrapper">
+        <canvas id="roi-canvas"></canvas>
+      </div>
+      <p id="roi-status" class="roi-status">No ROI selected &mdash; full image will be analyzed</p>
+    </section>
+
+    <!-- Summary Stats -->
+    <section id="stats-section" class="hidden">
+      <h2>Summary</h2>
+      <div class="stats-grid">
+        <div class="stat"><span class="stat-value" id="stat-total">-</span><span class="stat-label">Total Cells</span></div>
+        <div class="stat"><span class="stat-value" id="stat-changed">-</span><span class="stat-label">Changed</span></div>
+        <div class="stat"><span class="stat-value" id="stat-pct">-</span><span class="stat-label">Change %</span></div>
+        <div class="stat"><span class="stat-value" id="stat-grid">-</span><span class="stat-label">Grid Size</span></div>
+      </div>
+    </section>
+
+    <!-- Cell Detail Bar -->
+    <section id="cell-detail" class="hidden">
+      <span id="cell-label">-</span>
+      <span id="cell-pos">-</span>
+      <span id="cell-diff">-</span>
+      <span id="cell-status">-</span>
+    </section>
+
+    <!-- Image Comparison (3 columns) -->
+    <section id="comparison-section" class="hidden">
+      <h2>Image Comparison</h2>
+      <div class="comparison-row">
+        <div class="comp-col">
+          <h3 id="label-a">Image A</h3>
+          <div class="img-wrapper">
+            <canvas id="canvas-a"></canvas>
+          </div>
+        </div>
+        <div class="comp-col">
+          <h3 id="label-b">Image B</h3>
+          <div class="img-wrapper">
+            <canvas id="canvas-b"></canvas>
+          </div>
+        </div>
+        <div class="comp-col">
+          <h3>Change Heatmap</h3>
+          <div class="img-wrapper">
+            <canvas id="canvas-diff"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Side-by-Side Detail View -->
+    <section id="detail-section" class="hidden">
+      <h2>Side-by-Side Detail View</h2>
+      <p class="hint">Raw images at full pixel detail for visual inspection. Cropped to ROI when active.</p>
+      <div class="detail-row">
+        <div class="detail-col">
+          <h3 id="detail-label-a">Image A</h3>
+          <div class="detail-img-wrapper">
+            <canvas id="detail-canvas-a"></canvas>
+          </div>
+        </div>
+        <div class="detail-col">
+          <h3 id="detail-label-b">Image B</h3>
+          <div class="detail-img-wrapper">
+            <canvas id="detail-canvas-b"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Change Grid Table (bird's eye) -->
+    <section id="grid-section" class="hidden">
+      <h2>Change Grid (Bird's-Eye View)</h2>
+      <div id="grid-container" class="grid-container"></div>
+    </section>
+
+    <!-- Changed Cells List -->
+    <section id="changed-list-section" class="hidden">
+      <h2>Changed Cells <span id="changed-count" class="badge"></span></h2>
+      <div id="changed-list" class="changed-list"></div>
+    </section>
+
+  </main>
+
+  <script src="analysis.js"></script>
+</body>
+</html>

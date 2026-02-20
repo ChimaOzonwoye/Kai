@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Shrine Tracker</h1>
+
+    <div id="status-bar" class="status connecting">
+      <span id="status-dot" class="dot"></span>
+      <span id="status-text">Checking server...</span>
+    </div>
+
+    <div id="location-info" class="info-box hidden">
+      <div class="info-row"><span class="label">Lat:</span> <span id="lat-val">-</span></div>
+      <div class="info-row"><span class="label">Lng:</span> <span id="lng-val">-</span></div>
+      <div class="info-row"><span class="label">Heading:</span> <span id="heading-val">-</span></div>
+      <div class="info-row"><span class="label">Pitch:</span> <span id="pitch-val">-</span></div>
+    </div>
+
+    <div id="no-streetview" class="message hidden">
+      <p>Navigate to <strong>Google Maps Street View</strong> first, then click this extension.</p>
+    </div>
+
+    <div id="server-down" class="message hidden">
+      <p>Server not running. Start it with:</p>
+      <code>cd server && python3 server.py</code>
+    </div>
+
+    <button id="analyze-btn" class="btn hidden">Analyze Location</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
