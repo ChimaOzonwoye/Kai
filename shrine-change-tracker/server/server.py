@@ -1,11 +1,12 @@
 """
 Shrine Change Tracker - Local Python Server
-Flask server that handles panorama searching and image fetching
-for the Shrine Change Tracker Chrome extension.
+Flask server that handles panorama searching, image fetching,
+auto-alignment, and comparison for the Shrine Change Tracker Chrome extension.
 """
 
 import hashlib
 import os
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -16,6 +17,7 @@ import requests
 import streetview
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
+from skimage.metrics import structural_similarity as ssim
 
 app = Flask(__name__)
 CORS(app)
@@ -24,6 +26,9 @@ CORS(app)
 CACHE_DIR = Path(tempfile.gettempdir()) / "shrine_tracker_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
+# Cache for best-aligned heading/pitch per panorama
+ALIGN_CACHE_PATH = CACHE_DIR / "align_cache.json"
+
 # In-memory store for last comparison overlay images
 _overlay_store = {}
 
@@ -31,6 +36,10 @@ THUMBNAIL_BASE = (
     "https://streetviewpixels-pa.googleapis.com/v1/thumbnail"
     "?cb_client=maps_sv.tactile"
 )
+
+# High-res size for comparisons
+COMPARE_W = 1600
+COMPARE_H = 800
 
 # Demo data: known panoramas at Largo Preneste, Rome (for fallback/testing)
 DEMO_PANORAMAS = {
@@ -52,8 +61,20 @@ DEMO_PANORAMAS = {
 }
 
 
+def _load_align_cache():
+    if ALIGN_CACHE_PATH.exists():
+        try:
+            return json.loads(ALIGN_CACHE_PATH.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_align_cache(cache):
+    ALIGN_CACHE_PATH.write_text(json.dumps(cache))
+
+
 def _cache_key(pano_id, heading, pitch, w, h):
-    # Normalize all values to consistent types for cache key stability
     raw = f"{pano_id}_{float(heading)}_{float(pitch)}_{int(w)}_{int(h)}"
     return hashlib.md5(raw.encode()).hexdigest()
 
@@ -88,6 +109,31 @@ def _cv_to_png_bytes(img):
     """Encode an OpenCV image to PNG bytes."""
     _, buf = cv2.imencode(".png", img)
     return buf.tobytes()
+
+
+def _crop_roi_pct(img, roi_pct):
+    """Crop an image using ROI defined as percentages (0-1)."""
+    h, w = img.shape[:2]
+    x = int(roi_pct["x"] * w)
+    y = int(roi_pct["y"] * h)
+    rw = int(roi_pct["w"] * w)
+    rh = int(roi_pct["h"] * h)
+    x = max(0, min(x, w - 1))
+    y = max(0, min(y, h - 1))
+    rw = max(1, min(rw, w - x))
+    rh = max(1, min(rh, h - y))
+    return img[y:y + rh, x:x + rw]
+
+
+def _compute_ssim(img_a, img_b):
+    """Compute SSIM between two images (grayscale). Returns float 0-1."""
+    gray_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY)
+    gray_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)
+    # Resize to match if needed
+    if gray_a.shape != gray_b.shape:
+        gray_b = cv2.resize(gray_b, (gray_a.shape[1], gray_a.shape[0]))
+    score, _ = ssim(gray_a, gray_b, full=True)
+    return float(score)
 
 
 def _compute_grid(img_a, img_b, cell_size, threshold):
@@ -199,8 +245,6 @@ def search_panoramas_endpoint():
         return jsonify({"panoramas": results})
 
     except Exception as e:
-        # If the streetview package fails (e.g., network issues, API changes),
-        # fall back to demo data if coordinates match a known location.
         key = _demo_key(lat, lon)
         if key in DEMO_PANORAMAS:
             return jsonify({
@@ -235,22 +279,112 @@ def thumbnail():
     return Response(img_bytes, mimetype="image/jpeg")
 
 
+@app.route("/auto-align", methods=["POST"])
+def auto_align():
+    """
+    Given a reference panorama (Image A) and a target panorama, try a 3x3 grid
+    of heading/pitch offsets and return the best match using SSIM.
+    Optionally uses ROI (as percentages) to focus the SSIM comparison.
+    Results are cached per (ref_pano, target_pano, base_heading, base_pitch) tuple.
+    """
+    data = request.get_json(force=True)
+    ref_pano_id = data["ref_pano_id"]
+    target_pano_id = data["target_pano_id"]
+    base_heading = float(data["heading"])
+    base_pitch = float(data["pitch"])
+    roi_pct = data.get("roi_pct")  # optional: {x, y, w, h} as 0-1 fractions
+
+    # Check cache
+    align_cache = _load_align_cache()
+    cache_key = f"{ref_pano_id}_{target_pano_id}_{base_heading}_{base_pitch}"
+    if roi_pct:
+        cache_key += f"_{roi_pct['x']:.3f}_{roi_pct['y']:.3f}_{roi_pct['w']:.3f}_{roi_pct['h']:.3f}"
+
+    if cache_key in align_cache:
+        return jsonify(align_cache[cache_key])
+
+    # Fetch reference image at high res
+    try:
+        ref_bytes = _fetch_thumbnail_bytes(ref_pano_id, base_heading, base_pitch, COMPARE_W, COMPARE_H)
+        ref_img = _bytes_to_cv(ref_bytes)
+        if ref_img is None:
+            return jsonify({"error": "Failed to decode reference image"}), 500
+        ref_img = cv2.resize(ref_img, (COMPARE_W, COMPARE_H))
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch reference image: {e}"}), 500
+
+    # Crop to ROI if provided
+    if roi_pct:
+        ref_crop = _crop_roi_pct(ref_img, roi_pct)
+    else:
+        ref_crop = ref_img
+
+    # Try 3x3 grid: heading ±5°, pitch ±3°
+    heading_offsets = [-5, 0, 5]
+    pitch_offsets = [-3, 0, 3]
+
+    best_score = -1
+    best_heading = base_heading
+    best_pitch = base_pitch
+
+    for dh in heading_offsets:
+        for dp in pitch_offsets:
+            h_try = base_heading + dh
+            p_try = base_pitch + dp
+            try:
+                t_bytes = _fetch_thumbnail_bytes(target_pano_id, h_try, p_try, COMPARE_W, COMPARE_H)
+                t_img = _bytes_to_cv(t_bytes)
+                if t_img is None:
+                    continue
+                t_img = cv2.resize(t_img, (COMPARE_W, COMPARE_H))
+
+                if roi_pct:
+                    t_crop = _crop_roi_pct(t_img, roi_pct)
+                else:
+                    t_crop = t_img
+
+                score = _compute_ssim(ref_crop, t_crop)
+                if score > best_score:
+                    best_score = score
+                    best_heading = h_try
+                    best_pitch = p_try
+            except Exception:
+                continue
+
+    result = {
+        "heading": best_heading,
+        "pitch": best_pitch,
+        "ssim_score": round(best_score, 4),
+        "offset_heading": best_heading - base_heading,
+        "offset_pitch": best_pitch - base_pitch,
+    }
+
+    # Cache the result
+    align_cache[cache_key] = result
+    _save_align_cache(align_cache)
+
+    return jsonify(result)
+
+
 @app.route("/compare", methods=["POST"])
 def compare():
     data = request.get_json(force=True)
     pano_a = data["pano_id_a"]
     pano_b = data["pano_id_b"]
-    heading = float(data.get("heading", 0))
-    pitch = float(data.get("pitch", 0))
+    heading_a = float(data.get("heading_a", data.get("heading", 0)))
+    pitch_a = float(data.get("pitch_a", data.get("pitch", 0)))
+    heading_b = float(data.get("heading_b", heading_a))
+    pitch_b = float(data.get("pitch_b", pitch_a))
     cell_size = int(data.get("cell_size", 15))
     threshold = float(data.get("threshold", 12))
-    w = int(data.get("width", 800))
-    h = int(data.get("height", 400))
+    w = int(data.get("width", COMPARE_W))
+    h = int(data.get("height", COMPARE_H))
+    roi_pct = data.get("roi_pct")  # optional: {x, y, w, h} as 0-1 fractions
 
     # Fetch both images
     try:
-        bytes_a = _fetch_thumbnail_bytes(pano_a, heading, pitch, w, h)
-        bytes_b = _fetch_thumbnail_bytes(pano_b, heading, pitch, w, h)
+        bytes_a = _fetch_thumbnail_bytes(pano_a, heading_a, pitch_a, w, h)
+        bytes_b = _fetch_thumbnail_bytes(pano_b, heading_b, pitch_b, w, h)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch images: {e}"}), 500
 
@@ -260,29 +394,36 @@ def compare():
     if img_a is None or img_b is None:
         return jsonify({"error": "Failed to decode one or both images"}), 500
 
-    # Resize to exact requested dimensions
     img_a = cv2.resize(img_a, (w, h))
     img_b = cv2.resize(img_b, (w, h))
 
-    # Compute grid comparison
-    cells, grid_rows, grid_cols = _compute_grid(img_a, img_b, cell_size, threshold)
+    # If ROI provided, crop both images to ROI for comparison
+    if roi_pct:
+        crop_a = _crop_roi_pct(img_a, roi_pct)
+        crop_b = _crop_roi_pct(img_b, roi_pct)
+    else:
+        crop_a = img_a
+        crop_b = img_b
+
+    # Compute grid comparison on cropped region
+    cells, grid_rows, grid_cols = _compute_grid(crop_a, crop_b, cell_size, threshold)
 
     changed_count = sum(1 for c in cells if c["changed"])
     total = len(cells)
     change_pct = round(changed_count / total * 100, 1) if total > 0 else 0.0
 
-    # Generate overlay images
-    overlay_a = _draw_overlay(img_a, cells, cell_size)
-    overlay_b = _draw_overlay(img_b, cells, cell_size)
-    diff_map = _draw_heatmap(img_a.shape, cells, cell_size)
+    # Generate overlay images on cropped regions
+    overlay_a = _draw_overlay(crop_a, cells, cell_size)
+    overlay_b = _draw_overlay(crop_b, cells, cell_size)
+    diff_map = _draw_heatmap(crop_a.shape, cells, cell_size)
 
     # Store overlays for serving
     _overlay_store["a"] = _cv_to_png_bytes(overlay_a)
     _overlay_store["b"] = _cv_to_png_bytes(overlay_b)
     _overlay_store["diff"] = _cv_to_png_bytes(diff_map)
 
-    qs_a = f"pano_id={pano_a}&heading={heading}&pitch={pitch}&w={w}&h={h}"
-    qs_b = f"pano_id={pano_b}&heading={heading}&pitch={pitch}&w={w}&h={h}"
+    qs_a = f"pano_id={pano_a}&heading={heading_a}&pitch={pitch_a}&w={w}&h={h}"
+    qs_b = f"pano_id={pano_b}&heading={heading_b}&pitch={pitch_b}&w={w}&h={h}"
 
     return jsonify(
         {
@@ -299,6 +440,81 @@ def compare():
             "diff_map_url": "/overlay/diff",
         }
     )
+
+
+@app.route("/compare-consecutive", methods=["POST"])
+def compare_consecutive():
+    """
+    Compare all consecutive date pairs for a list of panoramas within a given ROI.
+    Returns change percentages for each pair, suitable for a timeline chart.
+
+    Expects:
+      panoramas: [{pano_id, date, heading, pitch}, ...]  (sorted by date)
+      roi_pct: {x, y, w, h} as 0-1 fractions
+      cell_size: int (optional, default 15)
+      threshold: float (optional, default 12)
+    """
+    data = request.get_json(force=True)
+    panos = data["panoramas"]
+    roi_pct = data.get("roi_pct")
+    cell_size = int(data.get("cell_size", 15))
+    threshold = float(data.get("threshold", 12))
+    w = COMPARE_W
+    h = COMPARE_H
+
+    results = []
+
+    for i in range(len(panos) - 1):
+        pa = panos[i]
+        pb = panos[i + 1]
+
+        try:
+            bytes_a = _fetch_thumbnail_bytes(pa["pano_id"], pa["heading"], pa["pitch"], w, h)
+            bytes_b = _fetch_thumbnail_bytes(pb["pano_id"], pb["heading"], pb["pitch"], w, h)
+
+            img_a = _bytes_to_cv(bytes_a)
+            img_b = _bytes_to_cv(bytes_b)
+
+            if img_a is None or img_b is None:
+                results.append({
+                    "date_a": pa["date"],
+                    "date_b": pb["date"],
+                    "change_pct": None,
+                    "error": "Failed to decode image",
+                })
+                continue
+
+            img_a = cv2.resize(img_a, (w, h))
+            img_b = cv2.resize(img_b, (w, h))
+
+            if roi_pct:
+                img_a = _crop_roi_pct(img_a, roi_pct)
+                img_b = _crop_roi_pct(img_b, roi_pct)
+
+            cells, grid_rows, grid_cols = _compute_grid(img_a, img_b, cell_size, threshold)
+            changed_count = sum(1 for c in cells if c["changed"])
+            total = len(cells)
+            change_pct = round(changed_count / total * 100, 1) if total > 0 else 0.0
+
+            results.append({
+                "date_a": pa["date"],
+                "date_b": pb["date"],
+                "pano_id_a": pa["pano_id"],
+                "pano_id_b": pb["pano_id"],
+                "change_pct": change_pct,
+                "changed_cells": changed_count,
+                "total_cells": total,
+            })
+
+        except Exception as e:
+            results.append({
+                "date_a": pa["date"],
+                "date_b": pb["date"],
+                "change_pct": None,
+                "error": str(e),
+            })
+
+    return jsonify({"pairs": results})
 
 
 @app.route("/overlay/<name>", methods=["GET"])
