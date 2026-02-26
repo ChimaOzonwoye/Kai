@@ -1,95 +1,190 @@
 # Shrine Change Tracker
 
-A Chrome extension that detects visual changes at street-level locations over time using Google Street View historical imagery. Built for tracking devotional activity at urban shrines in Rome, Italy (plaques, flowers, candles added/removed from walls), but works at any location with Street View coverage.
+A tool that tracks visual changes at street-level locations over time using Google Street View historical imagery. Built for academic research on urban shrine devotion in Rome, Italy.
 
-Academic research project supervised by Dean Louis Hamilton, PhD at NJIT.
+## What This Is
+
+Religious shrines throughout Rome accumulate votive plaques, flowers, candles, and other devotional items over time. Tracking these changes tells researchers how personal religious devotion grows, declines, or shifts at specific locations across years.
+
+Previously, this was done by hand: a researcher would open Google Street View, look at each year's image of a shrine wall, and manually count every plaque — marking which ones were the same, which were new, and which had disappeared. For one site across 14 years of images, this could take days. For all 600+ mapped shrine sites in Rome, it would take months.
+
+This tool automates that process. Give it a GPS coordinate, and it:
+
+- Finds every available Street View image at that location (often going back to 2008)
+- Lets you trace the wall surface once so it knows what to analyze
+- Compares every consecutive year's image within that wall area
+- Reports what percentage of the wall changed and when
+- Detects when cars, trees, or signs are blocking the wall and excludes those areas
+
+The output is the same kind of measurement the manual process produced — but in seconds instead of weeks.
 
 ## How It Works
 
-1. Open Google Maps Street View and navigate to a location
-2. Click the extension icon
-3. The extension reads coordinates and viewing angle from the URL
-4. It finds all historical panoramas available at that location (dates from 2008-2025)
-5. It fetches a targeted image at each date, all at the same angle
-6. Select two dates to compare
-7. The system divides both images into a labeled grid and highlights which cells changed
-8. View results: overlay images, change heatmap, summary statistics, and a list of changed cells
+The tool has two parts: a **Chrome browser extension** and a **local Python server**.
 
-## Architecture
+The Chrome extension detects when you are viewing Google Street View and captures the GPS coordinates and camera angle. It opens an analysis page with a step-by-step wizard.
 
-- **Chrome Extension (Frontend)**: Popup UI + analysis page that handles visualization
-- **Python Server (Backend)**: Flask server that searches panoramas and fetches images
+The Python server runs on your computer. It fetches the actual Street View images, aligns them across years (since the camera position shifts slightly between captures), and runs the pixel-by-pixel comparison within the wall area you marked.
 
-The Python backend is required because the `streetview` Python package reliably finds all historical panoramas at a given coordinate. This cannot be replicated in JavaScript.
+### The Wizard Steps
 
-## Prerequisites
+1. **Location Detected** — Confirms the GPS coordinates and that the server is running.
+2. **Timeline** — Shows every available date as a thumbnail. You can click any image to set it as the reference (pick the clearest view of the wall). You can also fine-tune the camera angle for any image that looks slightly misaligned.
+3. **Mark the Wall** — Shows the reference image. You click to trace a polygon around the wall surface. This tells the system: "Only analyze pixels inside this outline. Everything outside — sky, ground, sidewalk — ignore it entirely."
+4. **Results** — Automatically compares every consecutive date pair. Shows a bar chart of change over time and a plain-language summary like: *"Between 2015-05 and 2016-06, 14% of the marked wall area changed. In the 2016 image, 92% of the wall was visible (8% was obstructed by a parked car)."*
 
-- Python 3.10+
-- Google Chrome
-- pip
+### Two Modes of Use
 
-## Server Setup
+**Interactive mode (current):** Navigate to a shrine in Google Street View, click the extension, and walk through the wizard. Good for exploring individual sites and validating results.
 
-```bash
-cd shrine-change-tracker/server
-python3 -m venv venv
-source venv/bin/activate
+**Batch mode (planned):** Provide a CSV file with columns for site name, latitude, longitude, heading, and pitch. The system processes all sites automatically. The wall mask and camera angles for each site need to be set once by a researcher, but after that, the batch runs unattended for all 600+ sites.
+
+## Built With
+
+- Development: [Claude Code](https://claude.ai/code) (AI-assisted development)
+- Architecture, product direction, and research: **Chima Ozonwoye**
+- Academic supervision: **Louis Hamilton, PhD**, New Jersey Institute of Technology
+
+## Setup
+
+These instructions assume you have never used a terminal before. Follow every step in order.
+
+### Install Prerequisites
+
+#### 1. Install Python
+
+Python is the programming language the server is written in.
+
+- Go to https://www.python.org/downloads/
+- Download the latest version for your operating system (Windows, Mac, or Linux)
+- Run the installer
+- **Important (Windows only):** Check the box that says **"Add Python to PATH"** during installation
+- To verify, open a terminal and type `python3 --version` (you should see something like `Python 3.12.x`)
+
+#### 2. Install Google Chrome
+
+If you do not already have Chrome, download it from https://www.google.com/chrome/
+
+#### 3. Download This Project
+
+- Click the green **Code** button at the top of this GitHub page
+- Click **Download ZIP**
+- Unzip the downloaded file somewhere you can find it (like your Desktop)
+
+### Install Dependencies
+
+#### 4. Open a Terminal
+
+- **Windows:** Search for "Command Prompt" or "PowerShell" in the Start menu
+- **Mac:** Search for "Terminal" in Spotlight (Cmd + Space)
+
+#### 5. Navigate to the Server Folder
+
+Type this command and press Enter. Adjust the path if you unzipped to a different location:
+
+```
+cd Desktop/Kai/shrine-change-tracker/server
+```
+
+#### 6. Install Python Packages
+
+```
 pip install -r requirements.txt
+```
+
+This installs Flask, OpenCV, scikit-image, and the other libraries the server needs. It may take a minute or two.
+
+### Start the Server
+
+You need to do this every time you want to use the tool.
+
+#### 7. Run the Server
+
+Make sure you are in the server folder (step 5), then run:
+
+```
 python3 server.py
 ```
 
-Server starts on http://localhost:5000
+You should see:
 
-## Extension Setup
+```
+==================================================
+  Shrine Change Tracker Server
+  Running on http://localhost:5000
+==================================================
+```
 
-1. Open Chrome, go to `chrome://extensions/`
-2. Enable **Developer Mode** (toggle in top-right)
-3. Click **Load unpacked**
-4. Select the `shrine-change-tracker/extension/` folder
-5. Pin the extension in the toolbar
+**Leave this terminal window open.** The server runs as long as this window is open.
 
-## Usage
+### Load the Chrome Extension
 
-1. Make sure `server.py` is running
-2. Open [Google Maps](https://www.google.com/maps)
-3. Enter Street View at any location
-4. Position the view to face what you want to track
-5. Click the extension icon
-6. Click **Analyze**
-7. View the timeline, select two dates, and click **Compare Selected Dates**
-8. Adjust cell size and sensitivity as needed
+You only need to do this once.
 
-## API Endpoints
+#### 8. Open the Extensions Page
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/search` | POST | Search panoramas at coordinates |
-| `/thumbnail` | GET | Fetch Street View thumbnail image |
-| `/compare` | POST | Compare two panoramas with grid analysis |
-| `/overlay/<name>` | GET | Serve generated overlay images |
+Open Google Chrome. Type `chrome://extensions` in the address bar and press Enter.
+
+#### 9. Enable Developer Mode
+
+In the top-right corner of the extensions page, toggle **Developer mode** on.
+
+#### 10. Load the Extension
+
+- Click **Load unpacked**
+- Navigate to the `shrine-change-tracker/extension` folder inside your unzipped project
+- Click **Select Folder**
+- You should see "Shrine Change Tracker" appear in your extensions list
+
+#### 11. Pin the Extension (Optional)
+
+Click the puzzle piece icon in Chrome's toolbar, then click the pin icon next to "Shrine Change Tracker." The icon will now always be visible.
+
+### Use the Tool
+
+#### 12. Go to a Shrine in Google Street View
+
+- Go to https://maps.google.com
+- Find a location (try Largo Preneste in Rome: `41.8929, 12.5417`)
+- Enter Street View by dragging the yellow person icon onto the street
+- Position yourself facing the wall you want to analyze
+
+#### 13. Click the Extension and Analyze
+
+- Click the Shrine Change Tracker icon in Chrome's toolbar
+- Confirm it shows "Server connected" with a green dot
+- Click **Analyze Location**
+- Follow the 4-step wizard in the new tab that opens
 
 ## Test Coordinates
 
-**Largo Preneste, Rome**
+**Largo Preneste, Rome** (known to have 13 dated panoramas from 2008-2025):
 - Latitude: 41.8929002
 - Longitude: 12.5416944
 - Heading: 310
 - Pitch: -5
-- Expected: 13 dated panoramas (2008-2025)
+
+## Troubleshooting
+
+**"Server offline" error:** The Python server is not running. Go back to step 7 and make sure the terminal window is still open.
+
+**No panoramas found:** Not every Street View location has historical imagery. Try a different location, or make sure you are actually in Street View mode (not just the regular map).
+
+**Images look misaligned between years:** Hover over any thumbnail in Step 2 and click the gear icon to manually adjust the camera angle for that year.
+
+**Extension not appearing:** Make sure Developer Mode is enabled in `chrome://extensions` and that you selected the `extension` folder (not the parent folder).
 
 ## Project Structure
 
 ```
 shrine-change-tracker/
-  README.md
   server/
-    server.py              # Flask server
+    server.py              # Python server (image fetching, comparison, alignment)
     requirements.txt       # Python dependencies
   extension/
     manifest.json          # Chrome extension manifest (V3)
-    popup.html/js/css      # Extension popup
-    analysis.html/js/css   # Analysis page
-    icon48.png             # Extension icon (48x48)
-    icon128.png            # Extension icon (128x128)
+    popup.html/js/css      # Extension popup (detects Street View location)
+    analysis.html/js/css   # Analysis wizard (timeline, wall marking, results)
+    icon48.png             # Extension icon
+    icon128.png            # Extension icon
 ```

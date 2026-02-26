@@ -246,12 +246,20 @@ body {
   text-align: center;
   border-radius: 8px;
   padding: 6px;
-  transition: transform 0.2s;
+  transition: transform 0.2s, border-color 0.2s;
   position: relative;
+  cursor: pointer;
+  border: 2px solid transparent;
 }
 
 .timeline-item:hover {
   transform: translateY(-2px);
+  border-color: #444;
+}
+
+.timeline-item.selected-ref {
+  border-color: #4a69bd;
+  box-shadow: 0 0 12px rgba(74, 105, 189, 0.4);
 }
 
 .timeline-item img {
@@ -299,18 +307,58 @@ body {
   background: rgba(74, 105, 189, 0.9);
 }
 
-/* ── Step 3: ROI ── */
-.roi-container {
+/* Reference picker */
+.ref-picker {
+  margin-top: 20px;
+  padding: 16px;
+  background: #1a1a2e;
+  border-radius: 10px;
+  border: 1px solid #2a2a4a;
+}
+
+.ref-picker-label {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 10px;
+}
+
+.ref-picker-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ref-thumb {
+  width: 80px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #111;
+}
+
+.ref-date {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.ref-hint {
+  font-size: 12px;
+  color: #666;
+  font-style: italic;
+}
+
+/* ── Step 3: Polygon Mask ── */
+.mask-container {
   background: #111;
   border-radius: 8px;
   overflow: hidden;
-  cursor: crosshair;
   position: relative;
   max-width: 800px;
-  /* Fixed position behavior: the canvas never resizes during drag */
+  cursor: crosshair;
 }
 
-.roi-container canvas {
+.mask-container canvas {
   width: 100%;
   height: auto;
   display: block;
@@ -318,14 +366,14 @@ body {
   -webkit-user-select: none;
 }
 
-.roi-actions {
+.mask-actions {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   margin-top: 12px;
 }
 
-.roi-status {
+.mask-status {
   font-size: 13px;
   color: #888;
 }
@@ -653,5 +701,9 @@ input[type="range"] {
   }
   .wizard-step {
     padding: 24px 16px;
+  }
+  .ref-picker-info {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

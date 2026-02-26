@@ -54,25 +54,34 @@
       <h2>Timeline</h2>
       <p class="step-desc">These are all the dates we found for this location. Scroll through and review them.</p>
       <div id="timeline" class="timeline-strip"></div>
+      <div id="ref-picker" class="ref-picker hidden">
+        <p class="ref-picker-label">Reference image for wall marking:</p>
+        <div class="ref-picker-info">
+          <img id="ref-thumb" class="ref-thumb" alt="Reference">
+          <span id="ref-date" class="ref-date"></span>
+          <span class="ref-hint">(Pick the clearest view of the wall — fewest obstructions)</span>
+        </div>
+      </div>
       <div class="step-nav">
         <button id="btn-back-to-1" class="btn btn-secondary">Back</button>
-        <button id="btn-to-step3" class="btn btn-primary">Select Region to Track</button>
+        <button id="btn-to-step3" class="btn btn-primary">Mark the Wall</button>
       </div>
     </div>
   </section>
 
-  <!-- ═══════ STEP 3: Select Region ═══════ -->
+  <!-- ═══════ STEP 3: Mark the Wall ═══════ -->
   <section id="step-3" class="wizard-step hidden">
     <div class="step-content">
-      <h2>Select Region</h2>
-      <p class="step-desc">Draw a box around the area you want to track.</p>
-      <p class="step-hint">Click and drag on the image below. Only this area will be analyzed for changes.</p>
-      <div id="roi-container" class="roi-container">
-        <canvas id="roi-canvas"></canvas>
+      <h2>Mark the Wall</h2>
+      <p class="step-desc">Click to trace the outline of the wall surface. Only the area inside your outline will be analyzed.</p>
+      <p class="step-hint">Click to add points. Click the first point (or double-click) to close the shape. Only wall surface matters — exclude sky, ground, and anything that isn't the wall.</p>
+      <div id="mask-container" class="mask-container">
+        <canvas id="mask-canvas"></canvas>
       </div>
-      <div class="roi-actions">
-        <button id="clear-roi-btn" class="btn btn-secondary hidden">Clear Selection</button>
-        <span id="roi-status" class="roi-status">No region selected yet</span>
+      <div class="mask-actions">
+        <button id="undo-point-btn" class="btn btn-secondary hidden">Undo Last Point</button>
+        <button id="clear-mask-btn" class="btn btn-secondary hidden">Clear All</button>
+        <span id="mask-status" class="mask-status">Click on the image to start outlining the wall</span>
       </div>
       <div class="step-nav">
         <button id="btn-back-to-2" class="btn btn-secondary">Back</button>
@@ -132,7 +141,6 @@
             <button id="reanalyze-btn" class="btn btn-secondary">Re-analyze with new settings</button>
           </div>
 
-          <!-- Overlay images -->
           <div id="overlay-section" class="hidden">
             <h4>Grid Overlays</h4>
             <div class="comparison-row">
@@ -151,7 +159,6 @@
             </div>
           </div>
 
-          <!-- Cell detail bar -->
           <div id="cell-detail" class="cell-detail hidden">
             <span id="cell-label">-</span>
             <span id="cell-pos">-</span>
@@ -159,13 +166,11 @@
             <span id="cell-status">-</span>
           </div>
 
-          <!-- Grid table -->
           <div id="grid-section" class="hidden">
             <h4>Change Grid (Bird's-Eye View)</h4>
             <div id="grid-container" class="grid-container"></div>
           </div>
 
-          <!-- Changed cells list -->
           <div id="changed-list-section" class="hidden">
             <h4>Changed Cells <span id="changed-count" class="badge"></span></h4>
             <div id="changed-list" class="changed-list"></div>
@@ -174,7 +179,7 @@
       </details>
 
       <div class="step-nav">
-        <button id="btn-back-to-3" class="btn btn-secondary">Back to Region Selection</button>
+        <button id="btn-back-to-3" class="btn btn-secondary">Back to Wall Selection</button>
       </div>
     </div>
   </section>
