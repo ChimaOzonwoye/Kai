@@ -13,8 +13,8 @@ body {
 
 .hidden { display: none !important; }
 
-/* ── Info Bar ── */
-#info-bar {
+/* ── Header ── */
+#header {
   background: #1a1a2e;
   padding: 14px 24px;
   display: flex;
@@ -26,23 +26,47 @@ body {
   z-index: 100;
 }
 
-#info-bar h1 {
+#header h1 {
   font-size: 18px;
   font-weight: 700;
   color: #fff;
 }
 
-.coords {
+/* ── Step Indicator ── */
+#step-indicator {
   display: flex;
-  gap: 16px;
-  font-size: 12px;
-  font-family: "SF Mono", "Fira Code", monospace;
-  color: #888;
+  align-items: center;
+  gap: 0;
 }
 
-.coords span::before {
-  color: #555;
-  margin-right: 4px;
+.step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #2a2a4a;
+  color: #666;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  transition: all 0.3s;
+}
+
+.step-dot.active {
+  background: #4a69bd;
+  color: #fff;
+}
+
+.step-dot.completed {
+  background: #2ed573;
+  color: #fff;
+}
+
+.step-line {
+  width: 32px;
+  height: 2px;
+  background: #2a2a4a;
 }
 
 /* ── Loading ── */
@@ -74,41 +98,137 @@ body {
   color: #888;
 }
 
-/* ── Sections ── */
-section {
-  padding: 20px 24px;
-  border-bottom: 1px solid #1a1a2e;
+/* ── Wizard Steps ── */
+.wizard-step {
+  min-height: calc(100vh - 60px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 24px;
 }
 
-h2 {
-  font-size: 16px;
+.step-content {
+  max-width: 960px;
+  width: 100%;
+}
+
+.step-content h2 {
+  font-size: 24px;
   font-weight: 700;
   color: #fff;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
-.badge {
+.step-desc {
+  font-size: 15px;
+  color: #999;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+.step-hint {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 16px;
+  font-style: italic;
+}
+
+/* ── Buttons ── */
+.btn {
+  padding: 10px 24px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+  white-space: nowrap;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
   background: #4a69bd;
   color: #fff;
-  font-size: 11px;
-  padding: 2px 8px;
+}
+
+.btn-primary:hover:not(:disabled) { background: #6a89cc; }
+
+.btn-secondary {
+  background: #2a2a4a;
+  color: #ccc;
+}
+
+.btn-secondary:hover:not(:disabled) { background: #3a3a5a; }
+
+.step-nav {
+  display: flex;
+  gap: 12px;
+  margin-top: 32px;
+}
+
+/* ── Step 1: Location Card ── */
+.location-card {
+  background: #1a1a2e;
   border-radius: 10px;
-  margin-left: 6px;
-  font-weight: 600;
+  padding: 20px;
+  margin-bottom: 20px;
+  max-width: 400px;
 }
 
-.hint {
-  font-size: 12px;
-  color: #666;
-  margin-bottom: 10px;
+.loc-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #222240;
 }
 
-/* ── Timeline ── */
+.loc-row:last-child { border-bottom: none; }
+
+.loc-label {
+  color: #888;
+  font-size: 14px;
+}
+
+.loc-value {
+  color: #fff;
+  font-size: 14px;
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+
+.server-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #888;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot-ok { background: #2ed573; }
+.dot-err { background: #ff4757; }
+
+.pano-found-msg {
+  font-size: 14px;
+  color: #2ed573;
+  margin-bottom: 20px;
+}
+
+/* ── Step 2: Timeline ── */
 .timeline-strip {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   overflow-x: auto;
-  padding: 8px 0;
+  padding: 12px 0;
   scrollbar-width: thin;
   scrollbar-color: #333 transparent;
 }
@@ -123,57 +243,200 @@ h2 {
 
 .timeline-item {
   flex-shrink: 0;
-  cursor: pointer;
   text-align: center;
-  border: 2px solid transparent;
-  border-radius: 6px;
-  padding: 4px;
-  transition: border-color 0.2s, transform 0.2s;
+  border-radius: 8px;
+  padding: 6px;
+  transition: transform 0.2s;
+  position: relative;
 }
 
 .timeline-item:hover {
   transform: translateY(-2px);
-  border-color: #444;
-}
-
-.timeline-item.selected-a {
-  border-color: #ff4757;
-  box-shadow: 0 0 10px rgba(255, 71, 87, 0.3);
-}
-
-.timeline-item.selected-b {
-  border-color: #2ed573;
-  box-shadow: 0 0 10px rgba(46, 213, 115, 0.3);
 }
 
 .timeline-item img {
-  width: 160px;
-  height: 80px;
+  width: 180px;
+  height: 90px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: 6px;
   display: block;
   background: #1a1a2e;
 }
 
 .timeline-date {
-  font-size: 11px;
-  margin-top: 4px;
-  color: #aaa;
-  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 13px;
+  margin-top: 6px;
+  color: #ccc;
+  font-weight: 600;
 }
 
-/* ── Controls ── */
-#controls-section {
+/* Adjust button on timeline items */
+.adjust-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  line-height: 1;
+}
+
+.timeline-item:hover .adjust-btn {
+  opacity: 1;
+}
+
+.adjust-btn:hover {
+  background: rgba(74, 105, 189, 0.9);
+}
+
+/* ── Step 3: ROI ── */
+.roi-container {
+  background: #111;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: crosshair;
+  position: relative;
+  max-width: 800px;
+  /* Fixed position behavior: the canvas never resizes during drag */
+}
+
+.roi-container canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.roi-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.roi-status {
+  font-size: 13px;
+  color: #888;
+}
+
+/* ── Step 4: Results ── */
+#chart-section h3,
+#detail-section h3 {
+  font-size: 18px;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.chart-hint {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.chart-container {
+  background: #1a1a2e;
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 32px;
+  overflow-x: auto;
+}
+
+.chart-container canvas {
+  display: block;
+  width: 100%;
+  height: 280px;
+}
+
+/* Detail view */
+.detail-summary {
+  font-size: 15px;
+  color: #ccc;
+  margin-bottom: 16px;
+  line-height: 1.5;
+  background: #1a1a2e;
+  padding: 14px 18px;
+  border-radius: 8px;
+  border-left: 4px solid #4a69bd;
+}
+
+.detail-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.detail-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.detail-col h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.detail-img-wrapper {
+  background: #111;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.detail-img-wrapper canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ── Advanced Section ── */
+.advanced-section {
+  margin-top: 32px;
+  background: #14142a;
+  border-radius: 10px;
+  border: 1px solid #2a2a4a;
+}
+
+.advanced-section summary {
+  padding: 14px 20px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #888;
+  user-select: none;
+}
+
+.advanced-section summary:hover {
+  color: #ccc;
+}
+
+.advanced-content {
+  padding: 0 20px 20px;
+}
+
+.advanced-controls {
   display: flex;
   align-items: flex-end;
-  gap: 24px;
-  background: #14142a;
+  gap: 20px;
   flex-wrap: wrap;
+  margin-bottom: 20px;
 }
 
 .control-group {
   flex: 1;
-  min-width: 200px;
+  min-width: 180px;
 }
 
 .control-group label {
@@ -192,96 +455,30 @@ input[type="range"] {
   accent-color: #4a69bd;
 }
 
-.btn {
-  padding: 10px 24px;
-  background: #4a69bd;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s;
-  white-space: nowrap;
-}
-
-.btn:hover:not(:disabled) { background: #6a89cc; }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* ── Stats ── */
-.stats-grid {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.stat {
-  flex: 1;
-  min-width: 120px;
-  background: #1a1a2e;
-  padding: 14px;
-  border-radius: 8px;
-  text-align: center;
-}
-
-.stat-value {
-  display: block;
-  font-size: 24px;
-  font-weight: 700;
-  color: #fff;
-}
-
-.stat-label {
-  display: block;
-  font-size: 11px;
-  color: #666;
-  margin-top: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-/* ── Cell Detail Bar ── */
-#cell-detail {
-  display: flex;
-  gap: 20px;
-  padding: 10px 24px;
-  background: #1a1a2e;
-  font-size: 13px;
-  font-family: "SF Mono", "Fira Code", monospace;
-  border-bottom: 1px solid #2a2a4a;
-  position: sticky;
-  top: 48px;
-  z-index: 90;
-}
-
-#cell-detail span {
-  color: #aaa;
-}
-
-/* ── Image Comparison ── */
+/* Overlay comparison */
 .comparison-row {
   display: flex;
   gap: 12px;
   overflow-x: auto;
+  margin-bottom: 16px;
 }
 
 .comp-col {
   flex: 1;
-  min-width: 300px;
+  min-width: 240px;
 }
 
-.comp-col h3 {
-  font-size: 13px;
+.comp-col h5 {
+  font-size: 12px;
   font-weight: 600;
-  color: #aaa;
-  margin-bottom: 8px;
+  color: #888;
+  margin-bottom: 6px;
 }
 
 .img-wrapper {
   background: #111;
   border-radius: 6px;
   overflow: hidden;
-  position: relative;
 }
 
 .img-wrapper canvas {
@@ -290,13 +487,30 @@ input[type="range"] {
   display: block;
 }
 
-/* ── Change Grid (Bird's Eye) ── */
+/* Cell detail bar */
+.cell-detail {
+  display: flex;
+  gap: 20px;
+  padding: 10px 16px;
+  background: #1a1a2e;
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+.cell-detail span {
+  color: #aaa;
+}
+
+/* Grid table */
 .grid-container {
   overflow: auto;
   max-height: 400px;
   background: #111;
   border-radius: 6px;
   padding: 4px;
+  margin-bottom: 16px;
 }
 
 .grid-container table {
@@ -318,9 +532,9 @@ input[type="range"] {
   position: relative;
 }
 
-/* ── Changed Cells List ── */
+/* Changed cells list */
 .changed-list {
-  max-height: 400px;
+  max-height: 300px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -360,82 +574,84 @@ input[type="range"] {
 .severity-medium { background: rgba(255, 140, 0, 0.2); color: #ff8c00; }
 .severity-high { background: rgba(255, 71, 87, 0.2); color: #ff4757; }
 
-/* ── ROI Selection ── */
-.roi-header {
+.badge {
+  background: #4a69bd;
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 6px;
+  font-weight: 600;
+}
+
+/* ── Adjust Modal ── */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  justify-content: center;
+  z-index: 300;
 }
 
-.roi-header h2 {
-  margin-bottom: 0;
+.modal-content {
+  background: #1a1a2e;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 500px;
+  width: 90%;
+  border: 1px solid #2a2a4a;
 }
 
-.roi-canvas-wrapper {
+.modal-content h3 {
+  font-size: 18px;
+  color: #fff;
+  margin-bottom: 4px;
+}
+
+.adjust-date {
+  font-size: 14px;
+  color: #888;
+  margin-bottom: 16px;
+}
+
+.adjust-preview {
   background: #111;
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
-  cursor: crosshair;
-  margin-top: 10px;
+  margin-bottom: 16px;
 }
 
-.roi-canvas-wrapper canvas {
+.adjust-preview img {
   width: 100%;
   height: auto;
   display: block;
 }
 
-.roi-status {
-  font-size: 12px;
-  font-family: "SF Mono", "Fira Code", monospace;
-  color: #666;
-  margin-top: 8px;
+.adjust-controls {
+  margin-bottom: 16px;
 }
 
-.btn-sm {
-  padding: 6px 14px;
-  font-size: 12px;
-  background: #8a1a1a;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s;
+.adjust-controls .control-group {
+  margin-bottom: 12px;
 }
 
-.btn-sm:hover {
-  background: #a52a2a;
-}
-
-/* ── Side-by-Side Detail View ── */
-.detail-row {
+.modal-actions {
   display: flex;
-  gap: 12px;
+  gap: 10px;
+  justify-content: flex-end;
 }
 
-.detail-col {
-  flex: 1;
-  min-width: 0;
-}
-
-.detail-col h3 {
-  font-size: 13px;
-  font-weight: 600;
-  color: #aaa;
-  margin-bottom: 8px;
-}
-
-.detail-img-wrapper {
-  background: #111;
-  border-radius: 6px;
-  overflow: auto;
-  max-height: 600px;
-  position: relative;
-}
-
-.detail-img-wrapper canvas {
-  display: block;
-  image-rendering: pixelated;
+/* ── Responsive ── */
+@media (max-width: 700px) {
+  .detail-row {
+    flex-direction: column;
+  }
+  .comparison-row {
+    flex-direction: column;
+  }
+  .wizard-step {
+    padding: 24px 16px;
+  }
 }

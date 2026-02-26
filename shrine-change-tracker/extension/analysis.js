@@ -7,47 +7,61 @@ const LNG = parseFloat(params.get("lng"));
 const HEADING = parseFloat(params.get("heading"));
 const PITCH = parseFloat(params.get("pitch"));
 
-// ── Display info bar ──
-document.getElementById("info-lat").textContent = `Lat: ${LAT.toFixed(7)}`;
-document.getElementById("info-lng").textContent = `Lng: ${LNG.toFixed(7)}`;
-document.getElementById("info-heading").textContent = `Heading: ${HEADING.toFixed(2)}°`;
-document.getElementById("info-pitch").textContent = `Pitch: ${PITCH.toFixed(2)}°`;
+// ── High-res size for comparisons, small for timeline thumbnails ──
+const COMPARE_W = 1600;
+const COMPARE_H = 800;
+const THUMB_W = 180;
+const THUMB_H = 90;
 
 // ── State ──
 let panoramas = [];
-let selectedA = null; // index
-let selectedB = null; // index
-let comparisonResult = null;
+// Per-panorama heading/pitch overrides: { [pano_id]: { heading, pitch } }
+let panoAngles = {};
+// ROI as percentages (0-1): { x, y, w, h }
+let roiPct = null;
+// Consecutive comparison results
+let consecutiveResults = [];
+// Currently selected pair index in the chart
+let selectedPairIdx = null;
+// Current wizard step
+let currentStep = 1;
 
-// ── ROI State ──
-let roi = null; // { x, y, w, h } in image pixel coordinates (800×400 space)
+// ── ROI drag state ──
 let roiDragging = false;
 let roiStartX = 0;
 let roiStartY = 0;
 let roiImage = null;
-let lastRoiPanoA = null;
 
 // ── DOM refs ──
 const loading = document.getElementById("loading");
 const loadingText = document.getElementById("loading-text");
-const mainContent = document.getElementById("main-content");
-const timeline = document.getElementById("timeline");
-const panoCount = document.getElementById("pano-count");
-const compareBtn = document.getElementById("compare-btn");
-const cellSizeSlider = document.getElementById("cell-size");
-const cellSizeVal = document.getElementById("cell-size-val");
-const thresholdSlider = document.getElementById("threshold");
-const thresholdVal = document.getElementById("threshold-val");
 
-// ROI DOM refs
+// Step sections
+const step1 = document.getElementById("step-1");
+const step2 = document.getElementById("step-2");
+const step3 = document.getElementById("step-3");
+const step4 = document.getElementById("step-4");
+
+// ROI
+const roiContainer = document.getElementById("roi-container");
 const roiCanvas = document.getElementById("roi-canvas");
 const roiCtx = roiCanvas.getContext("2d");
 const clearRoiBtn = document.getElementById("clear-roi-btn");
 const roiStatusEl = document.getElementById("roi-status");
 
+// Adjust modal
+const adjustModal = document.getElementById("adjust-modal");
+let adjustingPanoIdx = null;
+let adjustTempHeading = 0;
+let adjustTempPitch = 0;
+
 // ── Helpers ──
-function thumbnailUrl(panoId, w = 160, h = 80) {
-  return `${SERVER}/thumbnail?pano_id=${panoId}&heading=${HEADING}&pitch=${PITCH}&w=${w}&h=${h}`;
+function thumbnailUrl(panoId, heading, pitch, w = THUMB_W, h = THUMB_H) {
+  return `${SERVER}/thumbnail?pano_id=${panoId}&heading=${heading}&pitch=${pitch}&w=${w}&h=${h}`;
+}
+
+function getAngles(panoId) {
+  return panoAngles[panoId] || { heading: HEADING, pitch: PITCH };
 }
 
 function showLoading(msg) {
@@ -59,151 +73,35 @@ function hideLoading() {
   loading.classList.add("hidden");
 }
 
-// ── Slider updates ──
-cellSizeSlider.addEventListener("input", () => {
-  cellSizeVal.textContent = cellSizeSlider.value;
-});
-thresholdSlider.addEventListener("input", () => {
-  thresholdVal.textContent = thresholdSlider.value;
-});
+// ── Wizard Navigation ──
+function goToStep(step) {
+  currentStep = step;
+  [step1, step2, step3, step4].forEach((s) => s.classList.add("hidden"));
+  document.getElementById(`step-${step}`).classList.remove("hidden");
 
-// ── ROI Selection ──
-function showRoiSection() {
-  document.getElementById("roi-section").classList.remove("hidden");
-  const panoId = panoramas[selectedA].pano_id;
-  if (panoId !== lastRoiPanoA) {
-    lastRoiPanoA = panoId;
-    loadRoiImage();
-  }
+  // Update step indicator
+  document.querySelectorAll(".step-dot").forEach((dot) => {
+    const s = parseInt(dot.dataset.step);
+    dot.classList.remove("active", "completed");
+    if (s === step) dot.classList.add("active");
+    else if (s < step) dot.classList.add("completed");
+  });
+
+  // Scroll to top
+  window.scrollTo(0, 0);
 }
 
-function loadRoiImage() {
-  if (selectedA === null) return;
-  const panoId = panoramas[selectedA].pano_id;
-  const url = `${SERVER}/thumbnail?pano_id=${panoId}&heading=${HEADING}&pitch=${PITCH}&w=800&h=400`;
-
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => {
-    roiImage = img;
-    roiCanvas.width = img.width;
-    roiCanvas.height = img.height;
-    drawRoiCanvas();
-  };
-  img.src = url;
+// ── Step 1: Location Detected ──
+function initStep1() {
+  document.getElementById("info-lat").textContent = LAT.toFixed(7);
+  document.getElementById("info-lng").textContent = LNG.toFixed(7);
+  document.getElementById("info-heading").textContent = `${HEADING.toFixed(1)}\u00B0`;
+  document.getElementById("info-pitch").textContent = `${PITCH.toFixed(1)}\u00B0`;
 }
 
-function drawRoiCanvas() {
-  if (!roiImage) return;
-  roiCtx.drawImage(roiImage, 0, 0);
-
-  if (roi) {
-    // Dim outside ROI
-    roiCtx.fillStyle = "rgba(0, 0, 0, 0.6)";
-    roiCtx.fillRect(0, 0, roiCanvas.width, roi.y);
-    roiCtx.fillRect(0, roi.y + roi.h, roiCanvas.width, roiCanvas.height - roi.y - roi.h);
-    roiCtx.fillRect(0, roi.y, roi.x, roi.h);
-    roiCtx.fillRect(roi.x + roi.w, roi.y, roiCanvas.width - roi.x - roi.w, roi.h);
-
-    // ROI border (dashed blue)
-    roiCtx.strokeStyle = "#4a69bd";
-    roiCtx.lineWidth = 2;
-    roiCtx.setLineDash([6, 3]);
-    roiCtx.strokeRect(roi.x, roi.y, roi.w, roi.h);
-    roiCtx.setLineDash([]);
-
-    // Corner handles
-    const hs = 8;
-    roiCtx.fillStyle = "#4a69bd";
-    roiCtx.fillRect(roi.x - hs / 2, roi.y - hs / 2, hs, hs);
-    roiCtx.fillRect(roi.x + roi.w - hs / 2, roi.y - hs / 2, hs, hs);
-    roiCtx.fillRect(roi.x - hs / 2, roi.y + roi.h - hs / 2, hs, hs);
-    roiCtx.fillRect(roi.x + roi.w - hs / 2, roi.y + roi.h - hs / 2, hs, hs);
-
-    // Dimension label
-    roiCtx.fillStyle = "rgba(74, 105, 189, 0.85)";
-    roiCtx.fillRect(roi.x, roi.y - 22, 120, 20);
-    roiCtx.fillStyle = "#fff";
-    roiCtx.font = "12px monospace";
-    roiCtx.fillText(`${roi.w} × ${roi.h} px`, roi.x + 4, roi.y - 7);
-  }
-}
-
-function getCanvasCoords(e, canvas) {
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  return {
-    x: (e.clientX - rect.left) * scaleX,
-    y: (e.clientY - rect.top) * scaleY,
-  };
-}
-
-roiCanvas.addEventListener("mousedown", (e) => {
-  const pos = getCanvasCoords(e, roiCanvas);
-  roiStartX = pos.x;
-  roiStartY = pos.y;
-  roiDragging = true;
-});
-
-roiCanvas.addEventListener("mousemove", (e) => {
-  if (!roiDragging) return;
-  const pos = getCanvasCoords(e, roiCanvas);
-  const clampedX = Math.max(0, Math.min(pos.x, roiCanvas.width));
-  const clampedY = Math.max(0, Math.min(pos.y, roiCanvas.height));
-
-  roi = {
-    x: Math.round(Math.min(roiStartX, clampedX)),
-    y: Math.round(Math.min(roiStartY, clampedY)),
-    w: Math.round(Math.abs(clampedX - roiStartX)),
-    h: Math.round(Math.abs(clampedY - roiStartY)),
-  };
-
-  drawRoiCanvas();
-});
-
-roiCanvas.addEventListener("mouseup", () => {
-  if (!roiDragging) return;
-  roiDragging = false;
-
-  if (roi && roi.w > 10 && roi.h > 10) {
-    updateRoiStatus();
-    clearRoiBtn.classList.remove("hidden");
-  } else {
-    roi = null;
-    updateRoiStatus();
-  }
-});
-
-function updateRoiStatus() {
-  if (roi) {
-    roiStatusEl.textContent = `ROI: (${roi.x}, ${roi.y}) → (${roi.x + roi.w}, ${roi.y + roi.h})  |  ${roi.w} × ${roi.h} px`;
-    roiStatusEl.style.color = "#4a69bd";
-  } else {
-    roiStatusEl.textContent = "No ROI selected — full image will be analyzed";
-    roiStatusEl.style.color = "#666";
-    clearRoiBtn.classList.add("hidden");
-  }
-}
-
-function clearRoi() {
-  roi = null;
-  updateRoiStatus();
-  drawRoiCanvas();
-}
-
-clearRoiBtn.addEventListener("click", clearRoi);
-
-function isCellInRoi(cell) {
-  if (!roi) return true;
-  const cx = cell.x + cell.w / 2;
-  const cy = cell.y + cell.h / 2;
-  return cx >= roi.x && cx <= roi.x + roi.w && cy >= roi.y && cy <= roi.y + roi.h;
-}
-
-// ── Step 1: Search panoramas ──
+// ── Search panoramas ──
 async function searchPanoramas() {
-  showLoading("Searching for panoramas...");
+  showLoading("Searching for historical images...");
   const resp = await fetch(`${SERVER}/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -211,12 +109,18 @@ async function searchPanoramas() {
   });
   const data = await resp.json();
   panoramas = data.panoramas || [];
+
+  // Initialize default angles for each panorama
+  panoramas.forEach((p) => {
+    panoAngles[p.pano_id] = { heading: HEADING, pitch: PITCH };
+  });
+
   return panoramas;
 }
 
-// ── Step 2: Build timeline ──
+// ── Step 2: Timeline ──
 function buildTimeline() {
-  panoCount.textContent = `${panoramas.length} dates`;
+  const timeline = document.getElementById("timeline");
   timeline.innerHTML = "";
 
   panoramas.forEach((pano, idx) => {
@@ -224,8 +128,10 @@ function buildTimeline() {
     item.className = "timeline-item";
     item.dataset.index = idx;
 
+    const angles = getAngles(pano.pano_id);
+
     const img = document.createElement("img");
-    img.src = thumbnailUrl(pano.pano_id);
+    img.src = thumbnailUrl(pano.pano_id, angles.heading, angles.pitch);
     img.alt = pano.date;
     img.loading = "lazy";
 
@@ -233,134 +139,608 @@ function buildTimeline() {
     dateLabel.className = "timeline-date";
     dateLabel.textContent = pano.date;
 
+    // Adjust button
+    const adjBtn = document.createElement("button");
+    adjBtn.className = "adjust-btn";
+    adjBtn.textContent = "\u2699";
+    adjBtn.title = "Adjust viewing angle";
+    adjBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openAdjustModal(idx);
+    });
+
     item.appendChild(img);
     item.appendChild(dateLabel);
-    item.addEventListener("click", () => onTimelineClick(idx));
+    item.appendChild(adjBtn);
     timeline.appendChild(item);
   });
-
-  // Auto-select oldest and newest
-  if (panoramas.length >= 2) {
-    selectA(0);
-    selectB(panoramas.length - 1);
-  }
 }
 
-function clearSelections() {
-  document.querySelectorAll(".timeline-item").forEach((el) => {
-    el.classList.remove("selected-a", "selected-b");
-  });
+// ── Adjust Modal ──
+function openAdjustModal(idx) {
+  adjustingPanoIdx = idx;
+  const pano = panoramas[idx];
+  const angles = getAngles(pano.pano_id);
+
+  adjustTempHeading = 0;
+  adjustTempPitch = 0;
+
+  document.getElementById("adjust-pano-date").textContent = `Date: ${pano.date}`;
+
+  const headingSlider = document.getElementById("adjust-heading");
+  const pitchSlider = document.getElementById("adjust-pitch");
+  headingSlider.value = 0;
+  pitchSlider.value = 0;
+  document.getElementById("adjust-heading-val").textContent = "0";
+  document.getElementById("adjust-pitch-val").textContent = "0";
+
+  updateAdjustPreview(angles.heading, angles.pitch);
+  adjustModal.classList.remove("hidden");
 }
 
-function selectA(idx) {
-  selectedA = idx;
-  refreshSelectionUI();
+function updateAdjustPreview(h, p) {
+  const pano = panoramas[adjustingPanoIdx];
+  const img = document.getElementById("adjust-preview-img");
+  img.src = thumbnailUrl(pano.pano_id, h, p, 400, 200);
 }
 
-function selectB(idx) {
-  selectedB = idx;
-  refreshSelectionUI();
-}
+document.getElementById("adjust-heading").addEventListener("input", (e) => {
+  adjustTempHeading = parseFloat(e.target.value);
+  document.getElementById("adjust-heading-val").textContent = adjustTempHeading.toFixed(1);
+  const pano = panoramas[adjustingPanoIdx];
+  const base = getAngles(pano.pano_id);
+  updateAdjustPreview(HEADING + adjustTempHeading, PITCH + adjustTempPitch);
+});
 
-function refreshSelectionUI() {
-  clearSelections();
+document.getElementById("adjust-pitch").addEventListener("input", (e) => {
+  adjustTempPitch = parseFloat(e.target.value);
+  document.getElementById("adjust-pitch-val").textContent = adjustTempPitch.toFixed(1);
+  const pano = panoramas[adjustingPanoIdx];
+  const base = getAngles(pano.pano_id);
+  updateAdjustPreview(HEADING + adjustTempHeading, PITCH + adjustTempPitch);
+});
+
+document.getElementById("adjust-reset").addEventListener("click", () => {
+  adjustTempHeading = 0;
+  adjustTempPitch = 0;
+  document.getElementById("adjust-heading").value = 0;
+  document.getElementById("adjust-pitch").value = 0;
+  document.getElementById("adjust-heading-val").textContent = "0";
+  document.getElementById("adjust-pitch-val").textContent = "0";
+  updateAdjustPreview(HEADING, PITCH);
+});
+
+document.getElementById("adjust-cancel").addEventListener("click", () => {
+  adjustModal.classList.add("hidden");
+  adjustingPanoIdx = null;
+});
+
+document.getElementById("adjust-apply").addEventListener("click", () => {
+  const pano = panoramas[adjustingPanoIdx];
+  panoAngles[pano.pano_id] = {
+    heading: HEADING + adjustTempHeading,
+    pitch: PITCH + adjustTempPitch,
+  };
+
+  // Refresh that timeline thumbnail
   const items = document.querySelectorAll(".timeline-item");
-  if (selectedA !== null && items[selectedA]) {
-    items[selectedA].classList.add("selected-a");
+  if (items[adjustingPanoIdx]) {
+    const img = items[adjustingPanoIdx].querySelector("img");
+    const angles = getAngles(pano.pano_id);
+    img.src = thumbnailUrl(pano.pano_id, angles.heading, angles.pitch);
   }
-  if (selectedB !== null && items[selectedB]) {
-    items[selectedB].classList.add("selected-b");
-  }
-  compareBtn.disabled = selectedA === null || selectedB === null || selectedA === selectedB;
 
-  // Show ROI section when both dates are selected
-  if (selectedA !== null && selectedB !== null && selectedA !== selectedB) {
-    showRoiSection();
+  adjustModal.classList.add("hidden");
+  adjustingPanoIdx = null;
+});
+
+// ── Step 3: ROI Selection (Fixed Canvas) ──
+function loadRoiImage() {
+  // Use the earliest panorama for the ROI selection image
+  const pano = panoramas[0];
+  const angles = getAngles(pano.pano_id);
+  const url = `${SERVER}/thumbnail?pano_id=${pano.pano_id}&heading=${angles.heading}&pitch=${angles.pitch}&w=800&h=400`;
+
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    roiImage = img;
+    roiCanvas.width = 800;
+    roiCanvas.height = 400;
+    drawRoiCanvas();
+  };
+  img.src = url;
+}
+
+function drawRoiCanvas() {
+  if (!roiImage) return;
+  roiCtx.drawImage(roiImage, 0, 0, 800, 400);
+
+  if (roiPct) {
+    const x = roiPct.x * 800;
+    const y = roiPct.y * 400;
+    const w = roiPct.w * 800;
+    const h = roiPct.h * 400;
+
+    // Dim outside ROI
+    roiCtx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    roiCtx.fillRect(0, 0, 800, y);
+    roiCtx.fillRect(0, y + h, 800, 400 - y - h);
+    roiCtx.fillRect(0, y, x, h);
+    roiCtx.fillRect(x + w, y, 800 - x - w, h);
+
+    // ROI border
+    roiCtx.strokeStyle = "#4a69bd";
+    roiCtx.lineWidth = 2;
+    roiCtx.setLineDash([6, 3]);
+    roiCtx.strokeRect(x, y, w, h);
+    roiCtx.setLineDash([]);
+
+    // Corner handles
+    const hs = 8;
+    roiCtx.fillStyle = "#4a69bd";
+    [
+      [x - hs / 2, y - hs / 2],
+      [x + w - hs / 2, y - hs / 2],
+      [x - hs / 2, y + h - hs / 2],
+      [x + w - hs / 2, y + h - hs / 2],
+    ].forEach(([cx, cy]) => roiCtx.fillRect(cx, cy, hs, hs));
   }
 }
 
-function onTimelineClick(idx) {
-  if (selectedA === null) {
-    selectA(idx);
-  } else if (selectedB === null && idx !== selectedA) {
-    selectB(idx);
+function getCanvasCoords(e) {
+  const rect = roiCanvas.getBoundingClientRect();
+  const scaleX = roiCanvas.width / rect.width;
+  const scaleY = roiCanvas.height / rect.height;
+  return {
+    x: Math.max(0, Math.min((e.clientX - rect.left) * scaleX, roiCanvas.width)),
+    y: Math.max(0, Math.min((e.clientY - rect.top) * scaleY, roiCanvas.height)),
+  };
+}
+
+roiCanvas.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const pos = getCanvasCoords(e);
+  roiStartX = pos.x;
+  roiStartY = pos.y;
+  roiDragging = true;
+
+  // Lock the container position to prevent scroll-induced movement
+  roiContainer.style.position = "relative";
+});
+
+// Listen on document to catch mouse moves outside canvas
+document.addEventListener("mousemove", (e) => {
+  if (!roiDragging) return;
+  e.preventDefault();
+
+  const rect = roiCanvas.getBoundingClientRect();
+  const scaleX = roiCanvas.width / rect.width;
+  const scaleY = roiCanvas.height / rect.height;
+
+  // Clamp to canvas boundaries even if mouse is outside
+  const rawX = (e.clientX - rect.left) * scaleX;
+  const rawY = (e.clientY - rect.top) * scaleY;
+  const clampedX = Math.max(0, Math.min(rawX, roiCanvas.width));
+  const clampedY = Math.max(0, Math.min(rawY, roiCanvas.height));
+
+  const x = Math.min(roiStartX, clampedX);
+  const y = Math.min(roiStartY, clampedY);
+  const w = Math.abs(clampedX - roiStartX);
+  const h = Math.abs(clampedY - roiStartY);
+
+  // Store as percentages
+  roiPct = {
+    x: x / 800,
+    y: y / 400,
+    w: w / 800,
+    h: h / 400,
+  };
+
+  drawRoiCanvas();
+});
+
+document.addEventListener("mouseup", (e) => {
+  if (!roiDragging) return;
+  roiDragging = false;
+
+  if (roiPct && roiPct.w > 0.02 && roiPct.h > 0.02) {
+    updateRoiStatus();
+    clearRoiBtn.classList.remove("hidden");
+    document.getElementById("btn-to-step4").disabled = false;
   } else {
-    // Reset: new A, clear B
-    selectedA = idx;
-    selectedB = null;
-    refreshSelectionUI();
+    roiPct = null;
+    updateRoiStatus();
+    document.getElementById("btn-to-step4").disabled = true;
+  }
+});
+
+function updateRoiStatus() {
+  if (roiPct) {
+    const wPx = Math.round(roiPct.w * 800);
+    const hPx = Math.round(roiPct.h * 400);
+    roiStatusEl.textContent = `Region selected: ${wPx} \u00D7 ${hPx} pixels`;
+    roiStatusEl.style.color = "#4a69bd";
+  } else {
+    roiStatusEl.textContent = "No region selected yet";
+    roiStatusEl.style.color = "#888";
+    clearRoiBtn.classList.add("hidden");
+    document.getElementById("btn-to-step4").disabled = true;
   }
 }
 
-// ── Step 3: Run comparison ──
-async function runComparison() {
-  const cellSize = parseInt(cellSizeSlider.value);
-  const threshold = parseInt(thresholdSlider.value);
+clearRoiBtn.addEventListener("click", () => {
+  roiPct = null;
+  updateRoiStatus();
+  drawRoiCanvas();
+});
 
-  showLoading("Fetching and comparing images...");
+// ── Auto-Align All Panoramas ──
+async function autoAlignAll() {
+  if (panoramas.length < 2) return;
+
+  const refPano = panoramas[0];
+  let aligned = 0;
+  const total = panoramas.length - 1;
+
+  for (let i = 1; i < panoramas.length; i++) {
+    showLoading(`Aligning image ${i} of ${total}...`);
+    try {
+      const body = {
+        ref_pano_id: refPano.pano_id,
+        target_pano_id: panoramas[i].pano_id,
+        heading: HEADING,
+        pitch: PITCH,
+      };
+      if (roiPct) {
+        body.roi_pct = roiPct;
+      }
+
+      const resp = await fetch(`${SERVER}/auto-align`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const result = await resp.json();
+
+      // Only apply if the user hasn't manually adjusted this panorama
+      const current = panoAngles[panoramas[i].pano_id];
+      if (current.heading === HEADING && current.pitch === PITCH) {
+        panoAngles[panoramas[i].pano_id] = {
+          heading: result.heading,
+          pitch: result.pitch,
+        };
+      }
+      aligned++;
+    } catch (e) {
+      console.warn(`Auto-align failed for ${panoramas[i].pano_id}:`, e);
+    }
+  }
+}
+
+// ── Step 4: Run All Consecutive Comparisons ──
+async function runConsecutiveComparisons() {
+  showLoading("Aligning images for best comparison...");
+  await autoAlignAll();
+
+  showLoading("Comparing all date pairs...");
+
+  const panoList = panoramas.map((p) => {
+    const angles = getAngles(p.pano_id);
+    return {
+      pano_id: p.pano_id,
+      date: p.date,
+      heading: angles.heading,
+      pitch: angles.pitch,
+    };
+  });
+
+  const cellSize = parseInt(document.getElementById("cell-size").value);
+  const threshold = parseInt(document.getElementById("threshold").value);
+
+  const resp = await fetch(`${SERVER}/compare-consecutive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      panoramas: panoList,
+      roi_pct: roiPct,
+      cell_size: cellSize,
+      threshold: threshold,
+    }),
+  });
+
+  const data = await resp.json();
+  consecutiveResults = data.pairs || [];
+  hideLoading();
+}
+
+// ── Chart Rendering ──
+function renderChart() {
+  const canvas = document.getElementById("chart-canvas");
+  const ctx = canvas.getContext("2d");
+
+  const pairs = consecutiveResults;
+  if (pairs.length === 0) return;
+
+  // Set canvas resolution
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = 280 * dpr;
+  ctx.scale(dpr, dpr);
+
+  const W = rect.width;
+  const H = 280;
+  const padLeft = 60;
+  const padRight = 20;
+  const padTop = 20;
+  const padBottom = 60;
+  const chartW = W - padLeft - padRight;
+  const chartH = H - padTop - padBottom;
+
+  // Clear
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(0, 0, W, H);
+
+  // Find max change %
+  const maxPct = Math.max(10, ...pairs.map((p) => p.change_pct || 0));
+
+  // Y axis
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padLeft, padTop);
+  ctx.lineTo(padLeft, padTop + chartH);
+  ctx.stroke();
+
+  // Y labels
+  ctx.fillStyle = "#666";
+  ctx.font = "11px -apple-system, sans-serif";
+  ctx.textAlign = "right";
+  for (let pct = 0; pct <= maxPct; pct += Math.ceil(maxPct / 5)) {
+    const y = padTop + chartH - (pct / maxPct) * chartH;
+    ctx.fillText(`${pct}%`, padLeft - 8, y + 4);
+    ctx.strokeStyle = "#222";
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(padLeft + chartW, y);
+    ctx.stroke();
+  }
+
+  // Bars
+  const barWidth = Math.min(50, (chartW / pairs.length) * 0.7);
+  const gap = (chartW - barWidth * pairs.length) / (pairs.length + 1);
+
+  // Store bar positions for click detection
+  canvas._barRects = [];
+
+  pairs.forEach((pair, i) => {
+    const pct = pair.change_pct || 0;
+    const barH = (pct / maxPct) * chartH;
+    const x = padLeft + gap + i * (barWidth + gap);
+    const y = padTop + chartH - barH;
+
+    // Bar color based on change level
+    let color = "#2ed573";
+    if (pct >= 30) color = "#ff4757";
+    else if (pct >= 15) color = "#ffc700";
+    else if (pct >= 5) color = "#4a69bd";
+
+    // Highlight selected
+    if (selectedPairIdx === i) {
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(x - 2, y - 2, barWidth + 4, barH + 4);
+    }
+
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, barWidth, barH);
+
+    // Store rect for click detection
+    canvas._barRects.push({ x, y, w: barWidth, h: barH, idx: i });
+
+    // Value label on top
+    if (pct > 0) {
+      ctx.fillStyle = "#ccc";
+      ctx.font = "11px -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(`${pct}%`, x + barWidth / 2, y - 6);
+    }
+
+    // Date label (x-axis)
+    ctx.save();
+    ctx.translate(x + barWidth / 2, padTop + chartH + 8);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = "#888";
+    ctx.font = "10px -apple-system, sans-serif";
+    ctx.textAlign = "left";
+    const label = `${pair.date_a} \u2192 ${pair.date_b}`;
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  });
+
+  // Y axis label
+  ctx.save();
+  ctx.translate(14, padTop + chartH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = "#666";
+  ctx.font = "12px -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("Change %", 0, 0);
+  ctx.restore();
+}
+
+// Chart click handler
+document.getElementById("chart-canvas").addEventListener("click", (e) => {
+  const canvas = e.target;
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const x = (e.clientX - rect.left);
+  const y = (e.clientY - rect.top);
+
+  const bars = canvas._barRects || [];
+  for (const bar of bars) {
+    // Use generous click area
+    if (x >= bar.x - 5 && x <= bar.x + bar.w + 5 && y >= 0 && y <= 280) {
+      selectedPairIdx = bar.idx;
+      renderChart();
+      showPairDetail(bar.idx);
+      return;
+    }
+  }
+});
+
+// ── Show Detail for a Pair ──
+async function showPairDetail(idx) {
+  const pair = consecutiveResults[idx];
+  if (!pair) return;
+
+  const section = document.getElementById("detail-section");
+  section.classList.remove("hidden");
+
+  document.getElementById("detail-title").textContent =
+    `${pair.date_a} vs ${pair.date_b}`;
+
+  document.getElementById("detail-summary").textContent =
+    `Between ${pair.date_a} and ${pair.date_b}, ${pair.change_pct}% of the selected area changed.`;
+
+  document.getElementById("detail-label-a").textContent = pair.date_a;
+  document.getElementById("detail-label-b").textContent = pair.date_b;
+
+  // Find panorama objects
+  const panoA = panoramas.find((p) => p.pano_id === pair.pano_id_a);
+  const panoB = panoramas.find((p) => p.pano_id === pair.pano_id_b);
+  if (!panoA || !panoB) return;
+
+  const anglesA = getAngles(panoA.pano_id);
+  const anglesB = getAngles(panoB.pano_id);
+
+  // Load high-res images cropped to ROI
+  const urlA = thumbnailUrl(panoA.pano_id, anglesA.heading, anglesA.pitch, COMPARE_W, COMPARE_H);
+  const urlB = thumbnailUrl(panoB.pano_id, anglesB.heading, anglesB.pitch, COMPARE_W, COMPARE_H);
+
+  loadDetailCanvas("detail-canvas-a", urlA);
+  loadDetailCanvas("detail-canvas-b", urlB);
+
+  // Scroll to detail
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function loadDetailCanvas(canvasId, url) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    if (roiPct) {
+      // Crop to ROI
+      const sx = roiPct.x * img.width;
+      const sy = roiPct.y * img.height;
+      const sw = roiPct.w * img.width;
+      const sh = roiPct.h * img.height;
+      canvas.width = sw;
+      canvas.height = sh;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    } else {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+    }
+  };
+  img.src = url;
+}
+
+// ── Results Summary ──
+function renderResultsSummary() {
+  const pairs = consecutiveResults;
+  if (pairs.length === 0) return;
+
+  const validPairs = pairs.filter((p) => p.change_pct !== null);
+  const maxChange = validPairs.reduce(
+    (max, p) => (p.change_pct > max.change_pct ? p : max),
+    validPairs[0]
+  );
+  const avgChange = (
+    validPairs.reduce((sum, p) => sum + p.change_pct, 0) / validPairs.length
+  ).toFixed(1);
+
+  let summary = `Analyzed ${validPairs.length} time periods from ${panoramas[0].date} to ${panoramas[panoramas.length - 1].date}. `;
+  summary += `Average change between periods: ${avgChange}%. `;
+
+  if (maxChange && maxChange.change_pct > 0) {
+    summary += `The biggest change (${maxChange.change_pct}%) happened between ${maxChange.date_a} and ${maxChange.date_b}.`;
+  }
+
+  document.getElementById("results-summary").textContent = summary;
+}
+
+// ── Advanced: Run Single Comparison for Overlays ──
+async function runSingleComparison(pairIdx) {
+  const pair = consecutiveResults[pairIdx];
+  if (!pair) return;
+
+  const panoA = panoramas.find((p) => p.pano_id === pair.pano_id_a);
+  const panoB = panoramas.find((p) => p.pano_id === pair.pano_id_b);
+  if (!panoA || !panoB) return;
+
+  const anglesA = getAngles(panoA.pano_id);
+  const anglesB = getAngles(panoB.pano_id);
+
+  const cellSize = parseInt(document.getElementById("cell-size").value);
+  const threshold = parseInt(document.getElementById("threshold").value);
+
+  showLoading("Running detailed comparison...");
 
   const resp = await fetch(`${SERVER}/compare`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      pano_id_a: panoramas[selectedA].pano_id,
-      pano_id_b: panoramas[selectedB].pano_id,
-      heading: HEADING,
-      pitch: PITCH,
+      pano_id_a: panoA.pano_id,
+      pano_id_b: panoB.pano_id,
+      heading_a: anglesA.heading,
+      pitch_a: anglesA.pitch,
+      heading_b: anglesB.heading,
+      pitch_b: anglesB.pitch,
       cell_size: cellSize,
       threshold: threshold,
-      width: 800,
-      height: 400,
+      width: COMPARE_W,
+      height: COMPARE_H,
+      roi_pct: roiPct,
     }),
   });
 
-  comparisonResult = await resp.json();
+  const result = await resp.json();
   hideLoading();
-  renderResults();
+  return result;
 }
 
-// ── Step 4: Render results ──
-function renderResults() {
-  const r = comparisonResult;
+async function showAdvancedDetail(pairIdx) {
+  const result = await runSingleComparison(pairIdx);
+  if (!result) return;
 
-  // Filter cells by ROI
-  const roiCells = r.cells.filter(isCellInRoi);
-  const roiChangedCount = roiCells.filter((c) => c.changed).length;
-  const roiTotal = roiCells.length;
-  const roiPct = roiTotal > 0 ? ((roiChangedCount / roiTotal) * 100).toFixed(1) : "0.0";
+  const pair = consecutiveResults[pairIdx];
 
-  // Stats (ROI-filtered)
-  document.getElementById("stat-total").textContent = roiTotal.toLocaleString();
-  document.getElementById("stat-changed").textContent = roiChangedCount.toLocaleString();
-  document.getElementById("stat-pct").textContent = roiPct + "%";
-  document.getElementById("stat-grid").textContent = `${r.grid_cols} x ${r.grid_rows}`;
-  document.getElementById("stats-section").classList.remove("hidden");
+  // Overlays
+  document.getElementById("overlay-label-a").textContent = pair.date_a;
+  document.getElementById("overlay-label-b").textContent = pair.date_b;
 
-  // Labels
-  document.getElementById("label-a").textContent = `Image A — ${panoramas[selectedA].date}`;
-  document.getElementById("label-b").textContent = `Image B — ${panoramas[selectedB].date}`;
+  loadImageToCanvas("canvas-a", `${SERVER}${result.overlay_a_url}`);
+  loadImageToCanvas("canvas-b", `${SERVER}${result.overlay_b_url}`);
+  loadImageToCanvas("canvas-diff", `${SERVER}${result.diff_map_url}`);
+  document.getElementById("overlay-section").classList.remove("hidden");
 
-  // Load overlay images onto canvases (with ROI dimming)
-  loadImageToCanvas("canvas-a", `${SERVER}${r.overlay_a_url}`, r);
-  loadImageToCanvas("canvas-b", `${SERVER}${r.overlay_b_url}`, r);
-  loadImageToCanvas("canvas-diff", `${SERVER}${r.diff_map_url}`, r);
-  document.getElementById("comparison-section").classList.remove("hidden");
-  document.getElementById("cell-detail").classList.remove("hidden");
-
-  // Side-by-side detail view (raw images, cropped to ROI)
-  loadDetailView();
-  document.getElementById("detail-section").classList.remove("hidden");
-
-  // Build grid table (with ROI graying)
-  buildGridTable(r);
+  // Grid table
+  buildGridTable(result);
   document.getElementById("grid-section").classList.remove("hidden");
 
-  // Build changed cells list (ROI-filtered)
-  buildChangedList(r);
+  // Changed cells list
+  buildChangedList(result);
   document.getElementById("changed-list-section").classList.remove("hidden");
+
+  // Cell detail
+  document.getElementById("cell-detail").classList.remove("hidden");
 }
 
-function loadImageToCanvas(canvasId, url, result) {
+function loadImageToCanvas(canvasId, url) {
   const canvas = document.getElementById(canvasId);
   const ctx = canvas.getContext("2d");
   const img = new Image();
@@ -369,35 +749,8 @@ function loadImageToCanvas(canvasId, url, result) {
     canvas.width = img.width;
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
-
-    // Draw ROI overlay: dim area outside ROI
-    if (roi) {
-      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.fillRect(0, 0, canvas.width, roi.y);
-      ctx.fillRect(0, roi.y + roi.h, canvas.width, canvas.height - roi.y - roi.h);
-      ctx.fillRect(0, roi.y, roi.x, roi.h);
-      ctx.fillRect(roi.x + roi.w, roi.y, canvas.width - roi.x - roi.w, roi.h);
-
-      ctx.strokeStyle = "#4a69bd";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 3]);
-      ctx.strokeRect(roi.x, roi.y, roi.w, roi.h);
-      ctx.setLineDash([]);
-    }
   };
   img.src = url;
-
-  // Hover handler
-  canvas.onmousemove = (e) => {
-    const pos = getCanvasCoords(e, canvas);
-    const cellSize = parseInt(cellSizeSlider.value);
-    const col = Math.floor(pos.x / cellSize);
-    const row = Math.floor(pos.y / cellSize);
-    const cell = result.cells.find((c) => c.row === row && c.col === col);
-    if (cell) {
-      updateCellDetail(cell);
-    }
-  };
 }
 
 function updateCellDetail(cell) {
@@ -419,7 +772,6 @@ function buildGridTable(result) {
   container.innerHTML = "";
   const table = document.createElement("table");
 
-  // Build a 2D lookup
   const grid = {};
   result.cells.forEach((c) => {
     if (!grid[c.row]) grid[c.row] = {};
@@ -432,18 +784,14 @@ function buildGridTable(result) {
       const td = document.createElement("td");
       const cell = grid[r] && grid[r][c];
       if (cell) {
-        const inRoi = isCellInRoi(cell);
-        if (!inRoi) {
-          td.style.background = "#1a1a2e";
-          td.style.opacity = "0.25";
-        } else if (!cell.changed) {
-          td.style.background = "#1a5c2a"; // green
+        if (!cell.changed) {
+          td.style.background = "#1a5c2a";
         } else if (cell.diff < 25) {
-          td.style.background = "#8a7a00"; // yellow
+          td.style.background = "#8a7a00";
         } else {
-          td.style.background = "#8a1a1a"; // red
+          td.style.background = "#8a1a1a";
         }
-        td.title = `${cell.label}  Diff: ${cell.diff}${inRoi ? "" : "  (outside ROI)"}`;
+        td.title = `${cell.label}  Diff: ${cell.diff}`;
         td.addEventListener("mouseenter", () => updateCellDetail(cell));
       }
       tr.appendChild(td);
@@ -459,7 +807,7 @@ function buildChangedList(result) {
   list.innerHTML = "";
 
   const changed = result.cells
-    .filter((c) => c.changed && isCellInRoi(c))
+    .filter((c) => c.changed)
     .sort((a, b) => b.diff - a.diff);
 
   document.getElementById("changed-count").textContent = changed.length;
@@ -489,74 +837,90 @@ function buildChangedList(result) {
   });
 }
 
-// ── Side-by-Side Detail View ──
-function loadDetailView() {
-  const dateA = panoramas[selectedA].date;
-  const dateB = panoramas[selectedB].date;
-  document.getElementById("detail-label-a").textContent = `Image A — ${dateA}`;
-  document.getElementById("detail-label-b").textContent = `Image B — ${dateB}`;
+// ── Slider updates ──
+document.getElementById("cell-size").addEventListener("input", (e) => {
+  document.getElementById("cell-size-val").textContent = e.target.value;
+});
+document.getElementById("threshold").addEventListener("input", (e) => {
+  document.getElementById("threshold-val").textContent = e.target.value;
+});
 
-  const urlA = `${SERVER}/thumbnail?pano_id=${panoramas[selectedA].pano_id}&heading=${HEADING}&pitch=${PITCH}&w=800&h=400`;
-  const urlB = `${SERVER}/thumbnail?pano_id=${panoramas[selectedB].pano_id}&heading=${HEADING}&pitch=${PITCH}&w=800&h=400`;
+// ── Re-analyze button ──
+document.getElementById("reanalyze-btn").addEventListener("click", async () => {
+  await runConsecutiveComparisons();
+  renderChart();
+  renderResultsSummary();
 
-  loadDetailCanvas("detail-canvas-a", urlA);
-  loadDetailCanvas("detail-canvas-b", urlB);
-}
+  // Refresh advanced detail if a pair is selected
+  if (selectedPairIdx !== null) {
+    await showAdvancedDetail(selectedPairIdx);
+  }
+});
 
-function loadDetailCanvas(canvasId, url) {
-  const canvas = document.getElementById(canvasId);
-  const ctx = canvas.getContext("2d");
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => {
-    if (roi) {
-      // Crop to ROI and scale up 2x for pixel detail
-      const scale = 2;
-      canvas.width = roi.w * scale;
-      canvas.height = roi.h * scale;
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(
-        img,
-        roi.x, roi.y, roi.w, roi.h,   // source rect
-        0, 0, roi.w * scale, roi.h * scale  // dest rect (2x zoom)
-      );
-    } else {
-      // No ROI: show full image at native resolution
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-    }
-  };
-  img.src = url;
-}
+// ── Navigation Buttons ──
+document.getElementById("btn-to-step2").addEventListener("click", () => goToStep(2));
+document.getElementById("btn-back-to-1").addEventListener("click", () => goToStep(1));
+document.getElementById("btn-to-step3").addEventListener("click", () => {
+  goToStep(3);
+  loadRoiImage();
+});
+document.getElementById("btn-back-to-2").addEventListener("click", () => goToStep(2));
 
-// ── Compare button ──
-compareBtn.addEventListener("click", runComparison);
+document.getElementById("btn-to-step4").addEventListener("click", async () => {
+  goToStep(4);
+  await runConsecutiveComparisons();
+  renderChart();
+  renderResultsSummary();
+
+  // Auto-select first pair
+  if (consecutiveResults.length > 0) {
+    selectedPairIdx = 0;
+    renderChart();
+    showPairDetail(0);
+  }
+});
+
+document.getElementById("btn-back-to-3").addEventListener("click", () => goToStep(3));
+
+// ── Advanced section: load detail when opened ──
+document.getElementById("advanced-section").addEventListener("toggle", async (e) => {
+  if (e.target.open && selectedPairIdx !== null) {
+    await showAdvancedDetail(selectedPairIdx);
+  }
+});
 
 // ── Initialize ──
 async function init() {
+  initStep1();
+  goToStep(1);
+
   try {
     await searchPanoramas();
 
     if (panoramas.length === 0) {
       hideLoading();
-      document.body.innerHTML =
-        '<div style="padding:40px;text-align:center;color:#888;">' +
-        "<h2>No dated panoramas found at this location.</h2>" +
-        "<p>Try a different Street View location.</p></div>";
+      document.getElementById("server-dot").className = "dot dot-ok";
+      document.getElementById("server-text").textContent = "Server connected";
+      document.getElementById("pano-found-msg").textContent =
+        "No historical images found at this location. Try a different Street View location.";
+      document.getElementById("pano-found-msg").style.color = "#ff4757";
       return;
     }
 
     hideLoading();
-    mainContent.classList.remove("hidden");
+    document.getElementById("pano-found-msg").textContent =
+      `Found ${panoramas.length} historical images spanning ${panoramas[0].date} to ${panoramas[panoramas.length - 1].date}.`;
+    document.getElementById("btn-to-step2").disabled = false;
+
+    // Pre-build timeline
     buildTimeline();
   } catch (err) {
     hideLoading();
-    document.body.innerHTML =
-      '<div style="padding:40px;text-align:center;color:#ff4757;">' +
-      "<h2>Error</h2>" +
-      `<p>${err.message}</p>` +
-      "<p>Make sure the Python server is running on localhost:5000</p></div>";
+    document.getElementById("server-dot").className = "dot dot-err";
+    document.getElementById("server-text").textContent = "Server offline";
+    document.getElementById("pano-found-msg").textContent =
+      `Error: ${err.message}. Make sure the Python server is running on localhost:5000.`;
+    document.getElementById("pano-found-msg").style.color = "#ff4757";
   }
 }
 
