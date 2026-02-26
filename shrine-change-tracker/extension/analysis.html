@@ -8,7 +8,6 @@
 </head>
 <body>
 
-  <!-- Header -->
   <header id="header">
     <h1>Shrine Change Tracker</h1>
     <div id="step-indicator">
@@ -22,22 +21,21 @@
     </div>
   </header>
 
-  <!-- Loading Overlay -->
   <div id="loading" class="loading-overlay">
     <div class="spinner"></div>
     <p id="loading-text">Connecting...</p>
   </div>
 
-  <!-- ═══════ STEP 1: Location Detected ═══════ -->
+  <!-- STEP 1 -->
   <section id="step-1" class="wizard-step">
     <div class="step-content">
       <h2>Location Detected</h2>
-      <p class="step-desc">We found your Street View location. Here are the details:</p>
+      <p class="step-desc">We found your Street View location.</p>
       <div class="location-card">
         <div class="loc-row"><span class="loc-label">Latitude</span><span id="info-lat" class="loc-value">-</span></div>
         <div class="loc-row"><span class="loc-label">Longitude</span><span id="info-lng" class="loc-value">-</span></div>
-        <div class="loc-row"><span class="loc-label">Viewing Direction</span><span id="info-heading" class="loc-value">-</span></div>
-        <div class="loc-row"><span class="loc-label">Camera Tilt</span><span id="info-pitch" class="loc-value">-</span></div>
+        <div class="loc-row"><span class="loc-label">Direction</span><span id="info-heading" class="loc-value">-</span></div>
+        <div class="loc-row"><span class="loc-label">Tilt</span><span id="info-pitch" class="loc-value">-</span></div>
       </div>
       <div class="server-status">
         <span id="server-dot" class="dot dot-ok"></span>
@@ -48,18 +46,17 @@
     </div>
   </section>
 
-  <!-- ═══════ STEP 2: Timeline ═══════ -->
+  <!-- STEP 2 -->
   <section id="step-2" class="wizard-step hidden">
     <div class="step-content">
       <h2>Timeline</h2>
-      <p class="step-desc">These are all the dates we found for this location. Scroll through and review them.</p>
+      <p class="step-desc">All available dates for this location. Click an image to pick it as the reference (choose the clearest view of the wall).</p>
       <div id="timeline" class="timeline-strip"></div>
       <div id="ref-picker" class="ref-picker hidden">
-        <p class="ref-picker-label">Reference image for wall marking:</p>
+        <p class="ref-picker-label">Reference image:</p>
         <div class="ref-picker-info">
           <img id="ref-thumb" class="ref-thumb" alt="Reference">
           <span id="ref-date" class="ref-date"></span>
-          <span class="ref-hint">(Pick the clearest view of the wall — fewest obstructions)</span>
         </div>
       </div>
       <div class="step-nav">
@@ -69,12 +66,12 @@
     </div>
   </section>
 
-  <!-- ═══════ STEP 3: Mark the Wall ═══════ -->
+  <!-- STEP 3 -->
   <section id="step-3" class="wizard-step hidden">
-    <div class="step-content">
+    <div class="step-content step-content-wide">
       <h2>Mark the Wall</h2>
-      <p class="step-desc">Click to trace the outline of the wall surface. Only the area inside your outline will be analyzed.</p>
-      <p class="step-hint">Click to add points. Click the first point (or double-click) to close the shape. Only wall surface matters — exclude sky, ground, and anything that isn't the wall.</p>
+      <p class="step-desc">Click to trace the outline of the wall. Only the area inside your outline will be analyzed across all years.</p>
+      <p class="step-hint">Click to add points. Click the green starting dot (or double-click) to close the shape.</p>
       <div id="mask-container" class="mask-container">
         <canvas id="mask-canvas"></canvas>
       </div>
@@ -90,44 +87,33 @@
     </div>
   </section>
 
-  <!-- ═══════ STEP 4: Results ═══════ -->
+  <!-- STEP 4 -->
   <section id="step-4" class="wizard-step hidden">
     <div class="step-content">
       <h2>Results</h2>
       <p id="results-summary" class="step-desc"></p>
 
-      <!-- Change Timeline Chart -->
+      <!-- Color Legend -->
+      <div class="color-legend">
+        <span class="legend-item"><span class="legend-swatch legend-red"></span> Same (present in both)</span>
+        <span class="legend-item"><span class="legend-swatch legend-yellow"></span> New (appeared)</span>
+        <span class="legend-item"><span class="legend-swatch legend-green"></span> Gone (disappeared)</span>
+      </div>
+
+      <!-- Chart -->
       <div id="chart-section">
         <h3>Change Over Time</h3>
-        <p class="chart-hint">Click any bar to see that comparison in detail below.</p>
         <div id="chart-container" class="chart-container">
           <canvas id="chart-canvas"></canvas>
         </div>
       </div>
 
-      <!-- Side-by-Side Detail -->
-      <div id="detail-section" class="hidden">
-        <h3 id="detail-title">Comparison Detail</h3>
-        <p id="detail-summary" class="detail-summary"></p>
-        <div class="detail-row">
-          <div class="detail-col">
-            <h4 id="detail-label-a">Earlier</h4>
-            <div class="detail-img-wrapper">
-              <canvas id="detail-canvas-a"></canvas>
-            </div>
-          </div>
-          <div class="detail-col">
-            <h4 id="detail-label-b">Later</h4>
-            <div class="detail-img-wrapper">
-              <canvas id="detail-canvas-b"></canvas>
-            </div>
-          </div>
-        </div>
-      </div>
+      <!-- Pairwise comparison cards -->
+      <div id="pairs-container"></div>
 
-      <!-- Advanced (collapsible) -->
+      <!-- Advanced (hidden by default) -->
       <details id="advanced-section" class="advanced-section">
-        <summary>Advanced Details</summary>
+        <summary>Advanced Settings</summary>
         <div class="advanced-content">
           <div class="advanced-controls">
             <div class="control-group">
@@ -135,45 +121,10 @@
               <input type="range" id="cell-size" min="5" max="50" value="15" step="1">
             </div>
             <div class="control-group">
-              <label>Sensitivity Threshold: <strong id="threshold-val">12</strong></label>
+              <label>Sensitivity: <strong id="threshold-val">12</strong></label>
               <input type="range" id="threshold" min="1" max="50" value="12" step="1">
             </div>
-            <button id="reanalyze-btn" class="btn btn-secondary">Re-analyze with new settings</button>
-          </div>
-
-          <div id="overlay-section" class="hidden">
-            <h4>Grid Overlays</h4>
-            <div class="comparison-row">
-              <div class="comp-col">
-                <h5 id="overlay-label-a">Earlier</h5>
-                <div class="img-wrapper"><canvas id="canvas-a"></canvas></div>
-              </div>
-              <div class="comp-col">
-                <h5 id="overlay-label-b">Later</h5>
-                <div class="img-wrapper"><canvas id="canvas-b"></canvas></div>
-              </div>
-              <div class="comp-col">
-                <h5>Change Heatmap</h5>
-                <div class="img-wrapper"><canvas id="canvas-diff"></canvas></div>
-              </div>
-            </div>
-          </div>
-
-          <div id="cell-detail" class="cell-detail hidden">
-            <span id="cell-label">-</span>
-            <span id="cell-pos">-</span>
-            <span id="cell-diff">-</span>
-            <span id="cell-status">-</span>
-          </div>
-
-          <div id="grid-section" class="hidden">
-            <h4>Change Grid (Bird's-Eye View)</h4>
-            <div id="grid-container" class="grid-container"></div>
-          </div>
-
-          <div id="changed-list-section" class="hidden">
-            <h4>Changed Cells <span id="changed-count" class="badge"></span></h4>
-            <div id="changed-list" class="changed-list"></div>
+            <button id="reanalyze-btn" class="btn btn-secondary">Re-analyze</button>
           </div>
         </div>
       </details>
@@ -184,7 +135,7 @@
     </div>
   </section>
 
-  <!-- Thumbnail Adjust Modal -->
+  <!-- Adjust Modal -->
   <div id="adjust-modal" class="modal hidden">
     <div class="modal-content">
       <h3>Adjust Viewing Angle</h3>
