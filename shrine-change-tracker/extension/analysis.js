@@ -21,6 +21,7 @@ let maskImage = null;
 let maskCanvasW = COMPARE_W;
 let maskCanvasH = COMPARE_H;
 let pairResults = [];
+let perImageData = [];
 let currentStep = 1;
 
 // Adjust modal
@@ -235,7 +236,6 @@ function drawMaskCanvas() {
   }));
 
   if (maskClosed && pts.length >= 3) {
-    // Dim outside polygon
     maskCtx.save();
     maskCtx.beginPath();
     maskCtx.rect(0, 0, maskCanvasW, maskCanvasH);
@@ -246,7 +246,6 @@ function drawMaskCanvas() {
     maskCtx.fill("evenodd");
     maskCtx.restore();
 
-    // Outline
     maskCtx.beginPath();
     maskCtx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) maskCtx.lineTo(pts[i].x, pts[i].y);
@@ -255,7 +254,6 @@ function drawMaskCanvas() {
     maskCtx.lineWidth = 3;
     maskCtx.stroke();
 
-    // Vertices
     pts.forEach((pt) => {
       maskCtx.beginPath();
       maskCtx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
@@ -266,7 +264,6 @@ function drawMaskCanvas() {
       maskCtx.stroke();
     });
   } else {
-    // In-progress lines
     maskCtx.beginPath();
     maskCtx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) maskCtx.lineTo(pts[i].x, pts[i].y);
@@ -276,7 +273,6 @@ function drawMaskCanvas() {
     maskCtx.stroke();
     maskCtx.setLineDash([]);
 
-    // Vertices
     pts.forEach((pt, i) => {
       maskCtx.beginPath();
       maskCtx.arc(pt.x, pt.y, i === 0 ? 8 : 5, 0, Math.PI * 2);
@@ -287,7 +283,6 @@ function drawMaskCanvas() {
       maskCtx.stroke();
     });
 
-    // Close-target ring
     if (pts.length >= 3) {
       maskCtx.beginPath();
       maskCtx.arc(pts[0].x, pts[0].y, 16, 0, Math.PI * 2);
@@ -421,19 +416,15 @@ async function runAnalysis() {
   showLoading("Aligning images...");
   await autoAlignAll();
 
-  showLoading("Analyzing all consecutive pairs...");
+  showLoading("Detecting items on the wall across all years...");
 
   const panoList = panoramas.map((p) => {
     const a = getAngles(p.pano_id);
     return { pano_id: p.pano_id, date: p.date, heading: a.heading, pitch: a.pitch };
   });
 
-  const refAngles = getAngles(panoramas[refPanoIdx].pano_id);
   const body = {
     panoramas: panoList,
-    ref_pano_id: panoramas[refPanoIdx].pano_id,
-    ref_heading: refAngles.heading,
-    ref_pitch: refAngles.pitch,
     cell_size: parseInt(document.getElementById("cell-size").value),
     threshold: parseInt(document.getElementById("threshold").value),
   };
@@ -447,6 +438,7 @@ async function runAnalysis() {
 
   const data = await resp.json();
   pairResults = data.pairs || [];
+  perImageData = data.per_image || [];
   hideLoading();
 }
 
@@ -458,16 +450,18 @@ function renderResults() {
 }
 
 function renderSummary() {
-  const valid = pairResults.filter((p) => p.change_pct != null);
-  if (valid.length === 0) return;
+  const valid = pairResults.filter((p) => !p.error);
+  if (valid.length === 0 || perImageData.length === 0) return;
 
-  const max = valid.reduce((m, p) => (p.change_pct > m.change_pct ? p : m), valid[0]);
-  const avg = (valid.reduce((s, p) => s + p.change_pct, 0) / valid.length).toFixed(1);
+  const first = perImageData[0];
+  const last = perImageData[perImageData.length - 1];
+  const totalNew = valid.reduce((s, p) => s + (p.new_count || 0), 0);
+  const totalGone = valid.reduce((s, p) => s + (p.gone_count || 0), 0);
 
-  let text = `Analyzed ${valid.length} consecutive time periods from ${panoramas[0].date} to ${panoramas[panoramas.length - 1].date}. `;
-  text += `Average change between periods: ${avg}%. `;
-  if (max.change_pct > 0) {
-    text += `The most change (${max.change_pct}%) happened between ${max.date_a} and ${max.date_b}.`;
+  let text = `Tracked items on this wall from ${first.date} to ${last.date} (${perImageData.length} time periods). `;
+  text += `${first.items_detected} items detected in ${first.date}, ${last.items_detected} in ${last.date}. `;
+  if (totalNew > 0 || totalGone > 0) {
+    text += `Across all periods: ${totalNew} items appeared, ${totalGone} disappeared.`;
   }
   document.getElementById("results-summary").textContent = text;
 }
@@ -475,8 +469,7 @@ function renderSummary() {
 function renderChart() {
   const canvas = document.getElementById("chart-canvas");
   const ctx = canvas.getContext("2d");
-  const pairs = pairResults.filter((p) => p.change_pct != null);
-  if (pairs.length === 0) return;
+  if (perImageData.length === 0) return;
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -491,68 +484,66 @@ function renderChart() {
   ctx.fillStyle = "#1a1a2e";
   ctx.fillRect(0, 0, W, H);
 
-  const maxPct = Math.max(10, ...pairs.map((p) => p.change_pct));
+  const maxItems = Math.max(5, ...perImageData.map((d) => d.items_detected));
 
   // Y axis + gridlines
   ctx.strokeStyle = "#333"; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + cH); ctx.stroke();
   ctx.fillStyle = "#666"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
-  const yStep = Math.ceil(maxPct / 5);
-  for (let pct = 0; pct <= maxPct; pct += yStep) {
-    const y = padT + cH - (pct / maxPct) * cH;
-    ctx.fillText(`${pct}%`, padL - 8, y + 4);
+  const yStep = Math.ceil(maxItems / 5);
+  for (let n = 0; n <= maxItems; n += yStep) {
+    const y = padT + cH - (n / maxItems) * cH;
+    ctx.fillText(`${n}`, padL - 8, y + 4);
     ctx.strokeStyle = "#222";
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + cW, y); ctx.stroke();
   }
 
-  const barW = Math.min(50, (cW / pairs.length) * 0.7);
-  const gap = (cW - barW * pairs.length) / (pairs.length + 1);
+  const barW = Math.min(50, (cW / perImageData.length) * 0.7);
+  const gap = (cW - barW * perImageData.length) / (perImageData.length + 1);
   canvas._bars = [];
 
-  pairs.forEach((pair, i) => {
-    const pct = pair.change_pct;
-    const barH = (pct / maxPct) * cH;
+  perImageData.forEach((d, i) => {
+    const items = d.items_detected;
+    const barH = (items / maxItems) * cH;
     const x = padL + gap + i * (barW + gap);
     const y = padT + cH - barH;
 
-    let color = "#2ed573";
-    if (pct >= 30) color = "#ff4757";
-    else if (pct >= 15) color = "#ffc700";
-    else if (pct >= 5) color = "#4a69bd";
-
-    ctx.fillStyle = color;
+    ctx.fillStyle = "#4a69bd";
     ctx.fillRect(x, y, barW, barH);
     canvas._bars.push({ x, w: barW, idx: i });
 
-    if (pct > 0) {
-      ctx.fillStyle = "#ccc"; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
-      ctx.fillText(`${pct}%`, x + barW / 2, y - 6);
-    }
+    // Item count on top
+    ctx.fillStyle = "#ccc"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(`${items}`, x + barW / 2, y - 6);
 
+    // Date label
     ctx.save();
     ctx.translate(x + barW / 2, padT + cH + 8);
     ctx.rotate(Math.PI / 4);
     ctx.fillStyle = "#888"; ctx.font = "10px sans-serif"; ctx.textAlign = "left";
-    ctx.fillText(`${pair.date_a}\u2192${pair.date_b}`, 0, 0);
+    ctx.fillText(d.date, 0, 0);
     ctx.restore();
   });
 
+  // Y axis label
   ctx.save();
   ctx.translate(14, padT + cH / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillStyle = "#666"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
-  ctx.fillText("Change %", 0, 0);
+  ctx.fillText("Items Detected", 0, 0);
   ctx.restore();
 }
 
-// Chart click → scroll to pair card
+// Chart click → scroll to nearest pair card
 document.getElementById("chart-canvas").addEventListener("click", (e) => {
   const canvas = e.target;
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
   for (const bar of canvas._bars || []) {
     if (x >= bar.x - 5 && x <= bar.x + bar.w + 5) {
-      const card = document.getElementById(`pair-card-${bar.idx}`);
+      // A year at index i is the "A" of pair i and "B" of pair i-1
+      const pairIdx = Math.min(bar.idx, pairResults.length - 1);
+      const card = document.getElementById(`pair-card-${pairIdx}`);
       if (card) {
         document.querySelectorAll(".pair-card").forEach((c) => c.classList.remove("highlighted"));
         card.classList.add("highlighted");
@@ -574,27 +565,30 @@ function renderPairCards() {
     card.className = "pair-card";
     card.id = `pair-card-${idx}`;
 
-    // Change level badge
-    let changeClass = "pair-change-low";
-    if (pair.change_pct >= 30) changeClass = "pair-change-high";
-    else if (pair.change_pct >= 15) changeClass = "pair-change-med";
+    const sameCount = pair.same_count || 0;
+    const newCount = pair.new_count || 0;
+    const goneCount = pair.gone_count || 0;
 
     card.innerHTML = `
       <div class="pair-header">
         <h3>${pair.date_a} \u2192 ${pair.date_b}</h3>
-        <span class="pair-change ${changeClass}">${pair.change_pct}% changed</span>
+        <div class="pair-counts">
+          <span class="count-badge count-same">${sameCount} same</span>
+          <span class="count-badge count-new">${newCount} new</span>
+          <span class="count-badge count-gone">${goneCount} gone</span>
+        </div>
       </div>
       <p class="pair-summary">${pair.summary}</p>
-      <div class="pair-images">
-        <div class="pair-img-col">
-          <h4>${pair.date_a}</h4>
-          <div class="pair-img-wrapper">
+      <div class="pair-images-stacked">
+        <div class="pair-img-full">
+          <h4>${pair.date_a} (${pair.items_a} items detected)</h4>
+          <div class="img-wrapper">
             <img src="${SERVER}${pair.annotated_a_url}" alt="${pair.date_a} annotated">
           </div>
         </div>
-        <div class="pair-img-col">
-          <h4>${pair.date_b}</h4>
-          <div class="pair-img-wrapper">
+        <div class="pair-img-full">
+          <h4>${pair.date_b} (${pair.items_b} items detected)</h4>
+          <div class="img-wrapper">
             <img src="${SERVER}${pair.annotated_b_url}" alt="${pair.date_b} annotated">
           </div>
         </div>

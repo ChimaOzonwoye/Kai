@@ -1,8 +1,16 @@
 """
 Shrine Change Tracker - Local Python Server
+
 Flask server that handles panorama searching, image fetching,
-auto-alignment, polygon-mask-based comparison, and color-coded
-annotated output for the Shrine Change Tracker Chrome extension.
+auto-alignment, polygon-mask-based comparison, and object-level
+color-coded annotated output for the Shrine Change Tracker Chrome extension.
+
+Object detection approach:
+  1. Within the user's wall mask, compute the wall's background color (median in LAB)
+  2. Find pixels that differ significantly from wall → foreground
+  3. Contour detection to isolate individual objects (plaques, flowers, candles)
+  4. Match objects between consecutive years by centroid proximity
+  5. Color-code: Red = same position in both, Yellow = new, Green = gone
 """
 
 import hashlib
@@ -114,7 +122,6 @@ def _polygon_pct_to_mask(polygon_pct, w, h):
 
 
 def _polygon_bbox(polygon_pct, w, h):
-    """Get bounding box of polygon in pixel coords. Returns (x, y, bw, bh)."""
     xs = [int(p["x"] * w) for p in polygon_pct]
     ys = [int(p["y"] * h) for p in polygon_pct]
     x1 = max(0, min(xs))
@@ -133,117 +140,7 @@ def _compute_ssim(img_a, img_b):
     return float(score)
 
 
-def _compute_reference_texture(ref_img, mask):
-    lab = cv2.cvtColor(ref_img, cv2.COLOR_BGR2LAB)
-    masked_pixels = lab[mask == 255]
-    if len(masked_pixels) == 0:
-        return None
-    return {
-        "mean": masked_pixels.mean(axis=0).tolist(),
-        "std": masked_pixels.std(axis=0).tolist(),
-    }
-
-
-def _detect_obstruction_pct(img, mask, ref_texture, cell_size):
-    """Return (visible_pct, obstructed_pct)."""
-    if ref_texture is None:
-        return 100.0, 0.0
-
-    h, w = img.shape[:2]
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float64)
-    ref_mean = np.array(ref_texture["mean"])
-    ref_std = np.array(ref_texture["std"])
-    safe_std = np.maximum(ref_std, 5.0)
-
-    grid_cols = w // cell_size
-    grid_rows = h // cell_size
-    visible = 0
-    obstructed = 0
-
-    for r in range(grid_rows):
-        for c in range(grid_cols):
-            x, y = c * cell_size, r * cell_size
-            cx, cy = x + cell_size // 2, y + cell_size // 2
-            if cy >= h or cx >= w or mask[cy, cx] == 0:
-                continue
-            cell_mask = mask[y:y + cell_size, x:x + cell_size]
-            if np.count_nonzero(cell_mask) / (cell_size * cell_size) < 0.5:
-                continue
-            cell_mean = lab[y:y + cell_size, x:x + cell_size].mean(axis=(0, 1))
-            dist = np.sqrt(np.sum(((cell_mean - ref_mean) / safe_std) ** 2))
-            if dist > 4.0:
-                obstructed += 1
-            else:
-                visible += 1
-
-    total = visible + obstructed
-    if total == 0:
-        return 100.0, 0.0
-    return round(visible / total * 100, 1), round(obstructed / total * 100, 1)
-
-
-def _compute_masked_comparison(img_a, img_b, mask, cell_size, threshold):
-    """Compare two images within the mask. Returns (cells, grid_rows, grid_cols)."""
-    h, w = img_a.shape[:2]
-    gray_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY).astype(np.float64)
-    gray_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY).astype(np.float64)
-    grid_cols = w // cell_size
-    grid_rows = h // cell_size
-    cells = []
-    for r in range(grid_rows):
-        for c in range(grid_cols):
-            x, y = c * cell_size, r * cell_size
-            cx, cy = x + cell_size // 2, y + cell_size // 2
-            if cy >= h or cx >= w or mask[cy, cx] == 0:
-                continue
-            cell_mask = mask[y:y + cell_size, x:x + cell_size]
-            if np.count_nonzero(cell_mask) / (cell_size * cell_size) < 0.5:
-                continue
-            pa = gray_a[y:y + cell_size, x:x + cell_size]
-            pb = gray_b[y:y + cell_size, x:x + cell_size]
-            diff = float(np.mean(np.abs(pa - pb)))
-            cells.append({
-                "row": r, "col": c, "x": x, "y": y,
-                "w": cell_size, "h": cell_size,
-                "diff": round(diff, 2), "changed": diff >= threshold,
-            })
-    return cells, grid_rows, grid_cols
-
-
-def _annotate_image(img, cells, cell_size, mask, is_b=False, cells_a_changed=None, cells_b_changed=None):
-    """
-    Draw color-coded annotations on the image, cropped to mask bounding box.
-
-    Color legend (matching the previous student's manual approach):
-    - Red outline:    Same item present in both images (unchanged cell)
-    - Yellow outline: New item appeared in this image (cell changed, present in B but not highlighted in A)
-    - Green outline:  Item gone from this image (cell changed, was in A but not in B)
-
-    For image A: red = unchanged, green = gone (will disappear by B)
-    For image B: red = unchanged, yellow = new (appeared since A)
-    """
-    annotated = img.copy()
-
-    for cell in cells:
-        x, y, cw, ch = cell["x"], cell["y"], cell["w"], cell["h"]
-        if cell["changed"]:
-            if is_b:
-                # Yellow: new in B
-                color = (0, 255, 255)  # BGR yellow
-            else:
-                # Green: gone from A (will disappear by B)
-                color = (0, 200, 0)  # BGR green
-            cv2.rectangle(annotated, (x + 1, y + 1), (x + cw - 1, y + ch - 1), color, 2)
-        else:
-            # Red: same in both
-            color = (0, 0, 220)  # BGR red
-            cv2.rectangle(annotated, (x + 1, y + 1), (x + cw - 1, y + ch - 1), color, 1)
-
-    return annotated
-
-
 def _crop_to_mask_bbox(img, polygon_pct, w, h, pad=20):
-    """Crop image to the bounding box of the polygon mask with padding."""
     bx, by, bw, bh = _polygon_bbox(polygon_pct, w, h)
     x1 = max(0, bx - pad)
     y1 = max(0, by - pad)
@@ -253,7 +150,6 @@ def _crop_to_mask_bbox(img, polygon_pct, w, h, pad=20):
 
 
 def _store_image(img_bytes):
-    """Store an image and return its ID."""
     img_id = str(uuid.uuid4())[:12]
     _image_store[img_id] = img_bytes
     return img_id
@@ -261,6 +157,151 @@ def _store_image(img_bytes):
 
 def _demo_key(lat, lon):
     return f"{lat:.3f}_{lon:.3f}"
+
+
+# ───────── Object Detection ─────────
+
+def _detect_objects(img, mask, min_obj_diameter=15, dist_threshold=3.0):
+    """
+    Detect individual objects (plaques, flowers, candles) on the wall.
+
+    Approach:
+      1. Blur image slightly to reduce noise
+      2. Convert to LAB color space (perceptual)
+      3. Compute wall background as median color within mask
+      4. Pixels far from wall color = foreground (objects)
+      5. Morphological cleanup to merge fragments, remove noise
+      6. Contour detection to isolate individual objects
+      7. Filter by area (too small = noise, too large = wall chunk)
+
+    Returns list of detected objects, each with:
+      centroid (cx, cy), bbox (x, y, w, h), area, contour
+    """
+    h, w = img.shape[:2]
+    mask_area = np.count_nonzero(mask)
+    if mask_area < 100:
+        return []
+
+    min_area = int(3.14159 * (min_obj_diameter / 2) ** 2)
+    max_area = int(mask_area * 0.20)
+
+    blurred = cv2.GaussianBlur(img, (5, 5), 0)
+    lab = cv2.cvtColor(blurred, cv2.COLOR_BGR2LAB).astype(np.float64)
+
+    wall_pixels = lab[mask == 255]
+    median_color = np.median(wall_pixels, axis=0)
+    mad = np.median(np.abs(wall_pixels - median_color), axis=0)
+    mad = np.maximum(mad, 3.0)
+
+    diff = np.abs(lab - median_color) / mad
+    dist = np.sqrt(np.sum(diff ** 2, axis=2))
+
+    fg = (dist > dist_threshold).astype(np.uint8) * 255
+    fg = cv2.bitwise_and(fg, mask)
+
+    k_size = max(3, min_obj_diameter // 3)
+    if k_size % 2 == 0:
+        k_size += 1
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+    k_open = max(3, k_size // 2)
+    if k_open % 2 == 0:
+        k_open += 1
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel_close)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel_open)
+
+    contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    objects = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area or area > max_area:
+            continue
+        M = cv2.moments(cnt)
+        if M["m00"] == 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        objects.append({
+            "centroid": (cx, cy),
+            "bbox": (x, y, bw, bh),
+            "area": int(area),
+            "contour": cnt,
+        })
+
+    return objects
+
+
+def _match_objects(objs_a, objs_b, img_w, img_h, max_dist_pct=5.0):
+    """
+    Match objects between two images by centroid proximity.
+    Uses greedy nearest-neighbor matching.
+
+    Returns:
+      matched_pairs: [(obj_a, obj_b), ...]
+      gone:          [obj_a, ...]  (in A but no match in B)
+      new:           [obj_b, ...]  (in B but no match in A)
+    """
+    max_dist = max_dist_pct / 100 * max(img_w, img_h)
+
+    matched_a = set()
+    matched_b = set()
+    matched_pairs = []
+
+    distances = []
+    for i, oa in enumerate(objs_a):
+        for j, ob in enumerate(objs_b):
+            dx = oa["centroid"][0] - ob["centroid"][0]
+            dy = oa["centroid"][1] - ob["centroid"][1]
+            d = (dx ** 2 + dy ** 2) ** 0.5
+            if d <= max_dist:
+                distances.append((d, i, j))
+
+    distances.sort()
+    for d, i, j in distances:
+        if i in matched_a or j in matched_b:
+            continue
+        matched_pairs.append((objs_a[i], objs_b[j]))
+        matched_a.add(i)
+        matched_b.add(j)
+
+    gone = [objs_a[i] for i in range(len(objs_a)) if i not in matched_a]
+    new = [objs_b[j] for j in range(len(objs_b)) if j not in matched_b]
+
+    return matched_pairs, gone, new
+
+
+def _annotate_with_objects(img, matched_pairs, gone_objs, new_objs, is_b=False):
+    """
+    Draw colored outlines and dots on detected objects.
+
+    Image A: red = matched (same), green = gone (will disappear)
+    Image B: red = matched (same), yellow = new (appeared)
+    """
+    annotated = img.copy()
+
+    # Matched items — red
+    for pair in matched_pairs:
+        obj = pair[1] if is_b else pair[0]
+        cv2.drawContours(annotated, [obj["contour"]], -1, (0, 0, 220), 3)
+        cv2.circle(annotated, obj["centroid"], 6, (0, 0, 220), -1)
+        cv2.circle(annotated, obj["centroid"], 6, (255, 255, 255), 1)
+
+    if is_b:
+        # New items in B — yellow
+        for obj in new_objs:
+            cv2.drawContours(annotated, [obj["contour"]], -1, (0, 255, 255), 3)
+            cv2.circle(annotated, obj["centroid"], 6, (0, 255, 255), -1)
+            cv2.circle(annotated, obj["centroid"], 6, (255, 255, 255), 1)
+    else:
+        # Gone items from A — green
+        for obj in gone_objs:
+            cv2.drawContours(annotated, [obj["contour"]], -1, (0, 200, 0), 3)
+            cv2.circle(annotated, obj["centroid"], 6, (0, 200, 0), -1)
+            cv2.circle(annotated, obj["centroid"], 6, (255, 255, 255), 1)
+
+    return annotated
 
 
 # ───────── API Endpoints ─────────
@@ -306,7 +347,6 @@ def thumbnail():
 
 @app.route("/image/<image_id>", methods=["GET"])
 def serve_image(image_id):
-    """Serve a stored annotated image by ID."""
     if image_id not in _image_store:
         return jsonify({"error": "Image not found"}), 404
     return Response(_image_store[image_id], mimetype="image/png")
@@ -369,132 +409,122 @@ def auto_align():
 @app.route("/compare-all", methods=["POST"])
 def compare_all():
     """
-    Compare all consecutive date pairs. For each pair, generate color-coded
-    annotated images (cropped to wall area) and return URLs + stats.
+    Detect objects on every image, match consecutive pairs, return annotated results.
 
-    Color code:
-      Red   = same (unchanged between the two images)
-      Yellow = new (appeared in the later image)
-      Green  = gone (disappeared from the earlier image)
+    For each image: detect individual objects (plaques, flowers, candles) on the wall.
+    For each consecutive pair: match objects by position.
+    Color code: Red = same, Yellow = new, Green = gone.
 
-    Returns a list of pair results, each with image URLs for annotated A and B,
-    change percentage, obstruction info, and a plain-language summary.
+    Returns:
+      per_image: [{date, items_detected}, ...] for the chart
+      pairs: [{date_a, date_b, same_count, new_count, gone_count,
+               items_a, items_b, annotated_a_url, annotated_b_url, summary}, ...]
     """
     data = request.get_json(force=True)
-    panos = data["panoramas"]  # [{pano_id, date, heading, pitch}, ...]
+    panos = data["panoramas"]
     mask_polygon = data.get("mask_polygon")
-    ref_pano_id = data.get("ref_pano_id")
-    ref_heading = float(data.get("ref_heading", 0))
-    ref_pitch = float(data.get("ref_pitch", 0))
     cell_size = int(data.get("cell_size", 15))
     threshold = float(data.get("threshold", 12))
     w, h = COMPARE_W, COMPARE_H
 
     mask = None
-    ref_texture = None
     if mask_polygon and len(mask_polygon) >= 3:
         mask = _polygon_pct_to_mask(mask_polygon, w, h)
-        if ref_pano_id:
-            try:
-                ref_bytes = _fetch_thumbnail_bytes(ref_pano_id, ref_heading, ref_pitch, w, h)
-                ref_img = _bytes_to_cv(ref_bytes)
-                if ref_img is not None:
-                    ref_img = cv2.resize(ref_img, (w, h))
-                    ref_texture = _compute_reference_texture(ref_img, mask)
-            except Exception:
-                pass
-
     if mask is None:
         mask = np.ones((h, w), dtype=np.uint8) * 255
 
-    results = []
+    dist_threshold = max(1.5, threshold / 4.0)
+    min_obj_diameter = max(5, cell_size)
 
+    # Fetch all images and detect objects
+    images = []
+    all_objects = []
+    for p in panos:
+        try:
+            img_bytes = _fetch_thumbnail_bytes(p["pano_id"], p["heading"], p["pitch"], w, h)
+            img = _bytes_to_cv(img_bytes)
+            if img is not None:
+                img = cv2.resize(img, (w, h))
+                images.append(img)
+                objs = _detect_objects(img, mask, min_obj_diameter, dist_threshold)
+                all_objects.append(objs)
+            else:
+                images.append(None)
+                all_objects.append([])
+        except Exception:
+            images.append(None)
+            all_objects.append([])
+
+    # Per-image item counts (for chart)
+    per_image = []
+    for i, p in enumerate(panos):
+        per_image.append({
+            "date": p["date"],
+            "items_detected": len(all_objects[i]),
+        })
+
+    # Compare consecutive pairs
+    results = []
     for i in range(len(panos) - 1):
         pa, pb = panos[i], panos[i + 1]
 
-        try:
-            bytes_a = _fetch_thumbnail_bytes(pa["pano_id"], pa["heading"], pa["pitch"], w, h)
-            bytes_b = _fetch_thumbnail_bytes(pb["pano_id"], pb["heading"], pb["pitch"], w, h)
-            img_a = _bytes_to_cv(bytes_a)
-            img_b = _bytes_to_cv(bytes_b)
+        if images[i] is None or images[i + 1] is None:
+            results.append({"date_a": pa["date"], "date_b": pb["date"], "error": "image failed"})
+            continue
 
-            if img_a is None or img_b is None:
-                results.append({"date_a": pa["date"], "date_b": pb["date"], "error": "decode failed"})
-                continue
+        matched, gone, new = _match_objects(all_objects[i], all_objects[i + 1], w, h)
 
-            img_a = cv2.resize(img_a, (w, h))
-            img_b = cv2.resize(img_b, (w, h))
+        same_count = len(matched)
+        gone_count = len(gone)
+        new_count = len(new)
+        items_a = len(all_objects[i])
+        items_b = len(all_objects[i + 1])
 
-            # Compute comparison
-            cells, _, _ = _compute_masked_comparison(img_a, img_b, mask, cell_size, threshold)
-            changed = sum(1 for c in cells if c["changed"])
-            total = len(cells)
-            change_pct = round(changed / total * 100, 1) if total > 0 else 0.0
+        # Generate annotated images
+        ann_a = _annotate_with_objects(images[i], matched, gone, new, is_b=False)
+        ann_b = _annotate_with_objects(images[i + 1], matched, gone, new, is_b=True)
 
-            # Obstruction
-            vis_a_pct, obs_a_pct = _detect_obstruction_pct(img_a, mask, ref_texture, cell_size)
-            vis_b_pct, obs_b_pct = _detect_obstruction_pct(img_b, mask, ref_texture, cell_size)
+        # Crop to wall bounding box for detail
+        if mask_polygon and len(mask_polygon) >= 3:
+            ann_a = _crop_to_mask_bbox(ann_a, mask_polygon, w, h)
+            ann_b = _crop_to_mask_bbox(ann_b, mask_polygon, w, h)
 
-            # Generate annotated images
-            ann_a = _annotate_image(img_a, cells, cell_size, mask, is_b=False)
-            ann_b = _annotate_image(img_b, cells, cell_size, mask, is_b=True)
+        id_a = _store_image(_cv_to_png_bytes(ann_a))
+        id_b = _store_image(_cv_to_png_bytes(ann_b))
 
-            # Crop to wall bounding box
-            if mask_polygon and len(mask_polygon) >= 3:
-                ann_a = _crop_to_mask_bbox(ann_a, mask_polygon, w, h)
-                ann_b = _crop_to_mask_bbox(ann_b, mask_polygon, w, h)
+        # Plain language summary
+        parts = []
+        parts.append(f"Found {items_a} items in {pa['date']} and {items_b} in {pb['date']}.")
+        detail = []
+        if same_count > 0:
+            detail.append(f"{same_count} stayed the same")
+        if new_count > 0:
+            detail.append(f"{new_count} new")
+        if gone_count > 0:
+            detail.append(f"{gone_count} gone")
+        if detail:
+            parts.append(" ".join([", ".join(detail)] + ["."]))
 
-            # Store and get URLs
-            id_a = _store_image(_cv_to_png_bytes(ann_a))
-            id_b = _store_image(_cv_to_png_bytes(ann_b))
+        summary = " ".join(parts)
 
-            # Also store plain wall crops (no annotations) for reference
-            plain_a = img_a.copy()
-            plain_b = img_b.copy()
-            if mask_polygon and len(mask_polygon) >= 3:
-                plain_a = _crop_to_mask_bbox(plain_a, mask_polygon, w, h)
-                plain_b = _crop_to_mask_bbox(plain_b, mask_polygon, w, h)
-            id_plain_a = _store_image(_cv_to_png_bytes(plain_a))
-            id_plain_b = _store_image(_cv_to_png_bytes(plain_b))
+        results.append({
+            "date_a": pa["date"],
+            "date_b": pb["date"],
+            "same_count": same_count,
+            "new_count": new_count,
+            "gone_count": gone_count,
+            "items_a": items_a,
+            "items_b": items_b,
+            "annotated_a_url": f"/image/{id_a}",
+            "annotated_b_url": f"/image/{id_b}",
+            "summary": summary,
+        })
 
-            # Plain-language summary
-            summary = f"Between {pa['date']} and {pb['date']}, {change_pct}% of the wall surface changed."
-            if obs_b_pct > 5:
-                summary += f" Note: {obs_b_pct}% of the wall was blocked by obstructions in {pb['date']}."
-            if obs_a_pct > 5:
-                summary += f" {obs_a_pct}% was blocked in {pa['date']}."
-
-            results.append({
-                "date_a": pa["date"],
-                "date_b": pb["date"],
-                "pano_id_a": pa["pano_id"],
-                "pano_id_b": pb["pano_id"],
-                "change_pct": change_pct,
-                "changed_cells": changed,
-                "total_cells": total,
-                "visible_a_pct": vis_a_pct,
-                "visible_b_pct": vis_b_pct,
-                "obstructed_a_pct": obs_a_pct,
-                "obstructed_b_pct": obs_b_pct,
-                "annotated_a_url": f"/image/{id_a}",
-                "annotated_b_url": f"/image/{id_b}",
-                "plain_a_url": f"/image/{id_plain_a}",
-                "plain_b_url": f"/image/{id_plain_b}",
-                "summary": summary,
-            })
-
-        except Exception as e:
-            results.append({"date_a": pa["date"], "date_b": pb["date"], "error": str(e)})
-
-    return jsonify({"pairs": results})
+    return jsonify({"per_image": per_image, "pairs": results})
 
 
 @app.route("/wall-crop", methods=["POST"])
 def wall_crop():
-    """
-    Return a high-res wall-only crop for a single panorama.
-    Used for the mask drawing step (big, clear image).
-    """
     data = request.get_json(force=True)
     pano_id = data["pano_id"]
     heading = float(data["heading"])

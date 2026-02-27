@@ -89,20 +89,20 @@
 
   <!-- STEP 4 -->
   <section id="step-4" class="wizard-step hidden">
-    <div class="step-content">
+    <div class="step-content step-content-wide">
       <h2>Results</h2>
       <p id="results-summary" class="step-desc"></p>
 
       <!-- Color Legend -->
       <div class="color-legend">
-        <span class="legend-item"><span class="legend-swatch legend-red"></span> Same (present in both)</span>
-        <span class="legend-item"><span class="legend-swatch legend-yellow"></span> New (appeared)</span>
-        <span class="legend-item"><span class="legend-swatch legend-green"></span> Gone (disappeared)</span>
+        <span class="legend-item"><span class="legend-swatch legend-red"></span> Same (present in both years)</span>
+        <span class="legend-item"><span class="legend-swatch legend-yellow"></span> New (appeared in this year)</span>
+        <span class="legend-item"><span class="legend-swatch legend-green"></span> Gone (disappeared since previous year)</span>
       </div>
 
-      <!-- Chart -->
+      <!-- Chart: items per year -->
       <div id="chart-section">
-        <h3>Change Over Time</h3>
+        <h3>Items Detected Over Time</h3>
         <div id="chart-container" class="chart-container">
           <canvas id="chart-canvas"></canvas>
         </div>
@@ -117,12 +117,14 @@
         <div class="advanced-content">
           <div class="advanced-controls">
             <div class="control-group">
-              <label>Cell Size: <strong id="cell-size-val">15</strong>px</label>
+              <label>Min Object Size: <strong id="cell-size-val">15</strong>px</label>
               <input type="range" id="cell-size" min="5" max="50" value="15" step="1">
+              <span class="control-hint">Smaller = detect smaller items. Larger = ignore small items.</span>
             </div>
             <div class="control-group">
-              <label>Sensitivity: <strong id="threshold-val">12</strong></label>
+              <label>Detection Sensitivity: <strong id="threshold-val">12</strong></label>
               <input type="range" id="threshold" min="1" max="50" value="12" step="1">
+              <span class="control-hint">Lower = more sensitive (detects more). Higher = stricter (fewer detections).</span>
             </div>
             <button id="reanalyze-btn" class="btn btn-secondary">Re-analyze</button>
           </div>
