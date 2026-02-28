@@ -5,12 +5,15 @@ Flask server that handles panorama searching, image fetching,
 auto-alignment, polygon-mask-based comparison, and object-level
 color-coded annotated output for the Shrine Change Tracker Chrome extension.
 
-Object detection approach:
-  1. Within the user's wall mask, compute the wall's background color (median in LAB)
-  2. Find pixels that differ significantly from wall → foreground
-  3. Contour detection to isolate individual objects (plaques, flowers, candles)
-  4. Match objects between consecutive years by centroid proximity
-  5. Color-code: Red = same position in both, Yellow = new, Green = gone
+Plaque detection approach (MSER + edge contours):
+  1. MSER (Maximally Stable Extremal Regions) finds stable blob regions
+     on the wall — plaques are the textbook use case for MSER
+  2. Canny edge detection + contour analysis finds objects with clear
+     rectangular boundaries
+  3. Shape filtering: aspect ratio, solidity, rectangularity
+  4. Non-maximum suppression merges overlapping detections
+  5. Match detections between consecutive years by centroid proximity
+  6. Color-code: Red = same position in both, Yellow = new, Green = gone
 """
 
 import hashlib
@@ -159,77 +162,195 @@ def _demo_key(lat, lon):
     return f"{lat:.3f}_{lon:.3f}"
 
 
-# ───────── Object Detection ─────────
+# ───────── Plaque Detection (MSER + Edge Contours) ─────────
 
-def _detect_objects(img, mask, min_obj_diameter=15, dist_threshold=3.0):
+def _bbox_iou(b1, b2):
+    """Intersection-over-union for two (x, y, w, h) bounding boxes."""
+    x1, y1, w1, h1 = b1
+    x2, y2, w2, h2 = b2
+    xi1 = max(x1, x2)
+    yi1 = max(y1, y2)
+    xi2 = min(x1 + w1, x2 + w2)
+    yi2 = min(y1 + h1, y2 + h2)
+    if xi2 <= xi1 or yi2 <= yi1:
+        return 0.0
+    inter = (xi2 - xi1) * (yi2 - yi1)
+    union = w1 * h1 + w2 * h2 - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _nms_candidates(candidates, iou_threshold=0.35):
+    """Non-maximum suppression: keep the best-scoring detection per region."""
+    if not candidates:
+        return []
+    candidates.sort(key=lambda c: c.get("score", 0), reverse=True)
+    kept = []
+    suppressed = set()
+    for i, cand in enumerate(candidates):
+        if i in suppressed:
+            continue
+        kept.append(cand)
+        for j in range(i + 1, len(candidates)):
+            if j in suppressed:
+                continue
+            if _bbox_iou(cand["bbox"], candidates[j]["bbox"]) > iou_threshold:
+                suppressed.add(j)
+    return kept
+
+
+def _detect_objects(img, mask, min_obj_diameter=15, sensitivity=12):
     """
-    Detect individual objects (plaques, flowers, candles) on the wall.
+    Detect individual plaques / objects on the wall using two complementary
+    methods, merged with non-maximum suppression.
 
-    Approach:
-      1. Blur image slightly to reduce noise
-      2. Convert to LAB color space (perceptual)
-      3. Compute wall background as median color within mask
-      4. Pixels far from wall color = foreground (objects)
-      5. Morphological cleanup to merge fragments, remove noise
-      6. Contour detection to isolate individual objects
-      7. Filter by area (too small = noise, too large = wall chunk)
+    Method 1 — MSER (Maximally Stable Extremal Regions):
+      MSER finds blob-like regions that remain stable across many intensity
+      thresholds.  A marble plaque on a stone wall is the textbook example
+      of a maximally stable region — it has consistent interior intensity
+      and a sharp boundary against the wall.
 
-    Returns list of detected objects, each with:
-      centroid (cx, cy), bbox (x, y, w, h), area, contour
+    Method 2 — Canny edges + closed contours:
+      Edge detection finds objects with clear rectangular boundaries.
+      After morphological closing (to seal small gaps) we keep only
+      closed contours whose shape looks plaque-like.
+
+    Both methods are filtered by:
+      • area (reasonable plaque size, not noise or half the wall)
+      • aspect ratio (< 5 — not a thin line)
+      • solidity (contour area / convex hull area > 0.5 — compact shape)
+      • rectangularity (contour area / bounding rect area > 0.35)
+      • must be inside the user's wall mask
+
+    Returns list of detected objects:
+      [{centroid, bbox, area, contour, score}, ...]
     """
     h, w = img.shape[:2]
     mask_area = np.count_nonzero(mask)
     if mask_area < 100:
         return []
 
-    min_area = int(3.14159 * (min_obj_diameter / 2) ** 2)
-    max_area = int(mask_area * 0.20)
+    # Size bounds — proportional to wall area
+    min_area = max(80, int(mask_area * 0.0008))       # ~0.08 % of wall
+    min_area = max(min_area, min_obj_diameter ** 2)    # slider override
+    max_area = int(mask_area * 0.08)                   # 8 % of wall
 
-    blurred = cv2.GaussianBlur(img, (5, 5), 0)
-    lab = cv2.cvtColor(blurred, cv2.COLOR_BGR2LAB).astype(np.float64)
+    # Preprocessing: bilateral filter preserves edges, smooths wall texture
+    filtered = cv2.bilateralFilter(img, 9, 75, 75)
+    gray = cv2.cvtColor(filtered, cv2.COLOR_BGR2GRAY)
 
-    wall_pixels = lab[mask == 255]
-    median_color = np.median(wall_pixels, axis=0)
-    mad = np.median(np.abs(wall_pixels - median_color), axis=0)
-    mad = np.maximum(mad, 3.0)
+    # Fill outside mask with wall median so detectors don't trigger on
+    # the mask boundary itself
+    wall_gray_vals = gray[mask == 255]
+    if len(wall_gray_vals) < 50:
+        return []
+    median_val = int(np.median(wall_gray_vals))
+    gray_for_detect = gray.copy()
+    gray_for_detect[mask == 0] = median_val
 
-    diff = np.abs(lab - median_color) / mad
-    dist = np.sqrt(np.sum(diff ** 2, axis=2))
+    candidates = []
 
-    fg = (dist > dist_threshold).astype(np.uint8) * 255
-    fg = cv2.bitwise_and(fg, mask)
+    # ── Method 1: MSER ──────────────────────────────────────────────
+    mser_delta = max(2, int(sensitivity / 3))         # 1→2  12→4  50→16
+    max_var = 0.15 + sensitivity / 200.0              # 0.155 … 0.40
 
-    k_size = max(3, min_obj_diameter // 3)
-    if k_size % 2 == 0:
-        k_size += 1
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
-    k_open = max(3, k_size // 2)
-    if k_open % 2 == 0:
-        k_open += 1
-    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
-    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel_close)
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel_open)
+    mser = cv2.MSER_create(
+        _delta=mser_delta,
+        _min_area=min_area,
+        _max_area=max_area,
+        _max_variation=max_var,
+    )
+    regions, bboxes = mser.detectRegions(gray_for_detect)
 
-    contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for region, bbox in zip(regions, bboxes):
+        x, y, rw, rh = bbox
+        if rw < 5 or rh < 5:
+            continue
+        area = len(region)
+        if area < min_area or area > max_area:
+            continue
+        cx, cy = x + rw // 2, y + rh // 2
+        if cy >= h or cx >= w or mask[cy, cx] == 0:
+            continue
 
-    objects = []
-    for cnt in contours:
+        hull = cv2.convexHull(region.reshape(-1, 1, 2))
+        hull_area = cv2.contourArea(hull)
+        if hull_area == 0:
+            continue
+
+        solidity = area / hull_area
+        aspect = max(rw, rh) / (min(rw, rh) + 1)
+        rect_area = rw * rh
+        rectangularity = area / rect_area if rect_area > 0 else 0
+
+        if solidity < 0.5 or aspect > 5.0 or rectangularity < 0.35:
+            continue
+
+        score = solidity * rectangularity
+        candidates.append({
+            "bbox": (x, y, rw, rh),
+            "centroid": (cx, cy),
+            "area": int(area),
+            "contour": hull,
+            "score": score,
+        })
+
+    # ── Method 2: Canny edges → closed contours ────────────────────
+    # Auto-threshold using Otsu on the wall pixels
+    median_v = float(np.median(wall_gray_vals))
+    canny_lo = int(max(10, median_v * 0.33))
+    canny_hi = int(min(250, median_v * 1.0))
+
+    edges = cv2.Canny(gray_for_detect, canny_lo, canny_hi)
+    edges = cv2.bitwise_and(edges, mask)
+
+    # Close small edge gaps so contours form closed shapes
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, k3, iterations=2)
+
+    contours_edge, _ = cv2.findContours(
+        edges_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    for cnt in contours_edge:
         area = cv2.contourArea(cnt)
         if area < min_area or area > max_area:
             continue
-        M = cv2.moments(cnt)
-        if M["m00"] == 0:
+        x, y, rw, rh = cv2.boundingRect(cnt)
+        cx, cy = x + rw // 2, y + rh // 2
+        if cy >= h or cx >= w or mask[cy, cx] == 0:
             continue
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        x, y, bw, bh = cv2.boundingRect(cnt)
-        objects.append({
+
+        peri = cv2.arcLength(cnt, True)
+        if peri == 0:
+            continue
+        approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+        if len(approx) < 4 or len(approx) > 12:
+            continue
+
+        hull = cv2.convexHull(cnt)
+        hull_area = cv2.contourArea(hull)
+        if hull_area == 0:
+            continue
+
+        solidity = area / hull_area
+        aspect = max(rw, rh) / (min(rw, rh) + 1)
+        rect_area = rw * rh
+        rectangularity = area / rect_area if rect_area > 0 else 0
+
+        if solidity < 0.45 or aspect > 5.0 or rectangularity < 0.3:
+            continue
+
+        score = solidity * rectangularity * 0.9  # slight preference for MSER
+        candidates.append({
+            "bbox": (x, y, rw, rh),
             "centroid": (cx, cy),
-            "bbox": (x, y, bw, bh),
             "area": int(area),
-            "contour": cnt,
+            "contour": hull,
+            "score": score,
         })
 
+    # ── Merge overlapping detections ──
+    objects = _nms_candidates(candidates, iou_threshold=0.35)
     return objects
 
 
@@ -433,8 +554,8 @@ def compare_all():
     if mask is None:
         mask = np.ones((h, w), dtype=np.uint8) * 255
 
-    dist_threshold = max(1.5, threshold / 4.0)
     min_obj_diameter = max(5, cell_size)
+    sensitivity = max(1, int(threshold))
 
     # Fetch all images and detect objects
     images = []
@@ -446,7 +567,7 @@ def compare_all():
             if img is not None:
                 img = cv2.resize(img, (w, h))
                 images.append(img)
-                objs = _detect_objects(img, mask, min_obj_diameter, dist_threshold)
+                objs = _detect_objects(img, mask, min_obj_diameter, sensitivity)
                 all_objects.append(objs)
             else:
                 images.append(None)
