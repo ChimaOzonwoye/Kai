@@ -5,15 +5,15 @@ Flask server that handles panorama searching, image fetching,
 auto-alignment, polygon-mask-based comparison, and object-level
 color-coded annotated output for the Shrine Change Tracker Chrome extension.
 
-Plaque detection approach (YOLO-World open-vocabulary detection):
-  1. YOLO-World is an open-vocabulary object detector — you describe what
-     to find in English ("plaque", "marble tablet", "flower", "candle")
-     and it searches the image for matching objects. Unlike MSER or edge
-     detection, it has SEMANTIC understanding of what a plaque looks like.
-  2. No training data needed — the model was pre-trained on massive
-     vision-language datasets.
-  3. Match detections between consecutive years by centroid proximity.
-  4. Color-code: Red = same position in both, Yellow = new, Green = gone.
+Plaque detection approach (MSER + edge contours):
+  1. MSER (Maximally Stable Extremal Regions) finds stable blob regions
+     on the wall — plaques are the textbook use case for MSER
+  2. Canny edge detection + contour analysis finds objects with clear
+     rectangular boundaries
+  3. Shape filtering: aspect ratio, solidity, rectangularity
+  4. Non-maximum suppression merges overlapping detections
+  5. Match detections between consecutive years by centroid proximity
+  6. Color-code: Red = same position in both, Yellow = new, Green = gone
 """
 
 import hashlib
@@ -162,110 +162,195 @@ def _demo_key(lat, lon):
     return f"{lat:.3f}_{lon:.3f}"
 
 
-# ───────── Plaque Detection (YOLO-World) ─────────
+# ───────── Plaque Detection (MSER + Edge Contours) ─────────
 
-# Classes for YOLO-World open-vocabulary detection.
-# Target classes = objects we want to count on the wall.
-# Null classes = background items that help the model distinguish objects.
-_YOLO_TARGET_CLASSES = [
-    "plaque", "memorial plaque", "votive plaque", "marble tablet",
-    "ceramic tile", "flower arrangement", "candle", "picture frame",
-    "religious image", "photograph",
-]
-_YOLO_NULL_CLASSES = {"wall", "building", "stone wall"}
-_YOLO_ALL_CLASSES = _YOLO_TARGET_CLASSES + list(_YOLO_NULL_CLASSES)
+def _bbox_iou(b1, b2):
+    """Intersection-over-union for two (x, y, w, h) bounding boxes."""
+    x1, y1, w1, h1 = b1
+    x2, y2, w2, h2 = b2
+    xi1 = max(x1, x2)
+    yi1 = max(y1, y2)
+    xi2 = min(x1 + w1, x2 + w2)
+    yi2 = min(y1 + h1, y2 + h2)
+    if xi2 <= xi1 or yi2 <= yi1:
+        return 0.0
+    inter = (xi2 - xi1) * (yi2 - yi1)
+    union = w1 * h1 + w2 * h2 - inter
+    return inter / union if union > 0 else 0.0
 
-_yolo_model = None
 
-
-def _get_yolo_model():
-    """Lazy-load YOLO-World model on first use."""
-    global _yolo_model
-    if _yolo_model is None:
-        from ultralytics import YOLOWorld
-        print("  Loading YOLO-World model (downloads ~90 MB on first run)...")
-        _yolo_model = YOLOWorld("yolov8s-worldv2.pt")
-        _yolo_model.set_classes(_YOLO_ALL_CLASSES)
-        print("  YOLO-World model ready.")
-    return _yolo_model
+def _nms_candidates(candidates, iou_threshold=0.35):
+    """Non-maximum suppression: keep the best-scoring detection per region."""
+    if not candidates:
+        return []
+    candidates.sort(key=lambda c: c.get("score", 0), reverse=True)
+    kept = []
+    suppressed = set()
+    for i, cand in enumerate(candidates):
+        if i in suppressed:
+            continue
+        kept.append(cand)
+        for j in range(i + 1, len(candidates)):
+            if j in suppressed:
+                continue
+            if _bbox_iou(cand["bbox"], candidates[j]["bbox"]) > iou_threshold:
+                suppressed.add(j)
+    return kept
 
 
 def _detect_objects(img, mask, min_obj_diameter=15, sensitivity=12):
     """
-    Detect individual plaques / objects on the wall using YOLO-World,
-    an open-vocabulary object detector.
+    Detect individual plaques / objects on the wall using two complementary
+    methods, merged with non-maximum suppression.
 
-    Unlike MSER or edge detection, YOLO-World has SEMANTIC understanding.
-    It was trained on massive vision-language datasets and knows what a
-    "plaque", "flower", or "candle" looks like. You describe what to find
-    in English text prompts and it searches for matching objects.
+    Method 1 — MSER (Maximally Stable Extremal Regions):
+      MSER finds blob-like regions that remain stable across many intensity
+      thresholds.  A marble plaque on a stone wall is the textbook example
+      of a maximally stable region — it has consistent interior intensity
+      and a sharp boundary against the wall.
 
-    sensitivity slider (1-50) maps to confidence threshold:
-      Low  = more sensitive (detects more, lower confidence required)
-      High = stricter (fewer detections, higher confidence required)
+    Method 2 — Canny edges + closed contours:
+      Edge detection finds objects with clear rectangular boundaries.
+      After morphological closing (to seal small gaps) we keep only
+      closed contours whose shape looks plaque-like.
+
+    Both methods are filtered by:
+      • area (reasonable plaque size, not noise or half the wall)
+      • aspect ratio (< 5 — not a thin line)
+      • solidity (contour area / convex hull area > 0.5 — compact shape)
+      • rectangularity (contour area / bounding rect area > 0.35)
+      • must be inside the user's wall mask
 
     Returns list of detected objects:
-      [{centroid, bbox, area, contour, score, class}, ...]
+      [{centroid, bbox, area, contour, score}, ...]
     """
     h, w = img.shape[:2]
+    mask_area = np.count_nonzero(mask)
+    if mask_area < 100:
+        return []
 
-    model = _get_yolo_model()
+    # Size bounds — proportional to wall area
+    min_area = max(80, int(mask_area * 0.0008))       # ~0.08 % of wall
+    min_area = max(min_area, min_obj_diameter ** 2)    # slider override
+    max_area = int(mask_area * 0.08)                   # 8 % of wall
 
-    # Map sensitivity slider to confidence threshold
-    # sensitivity=1  → conf=0.01  (very sensitive, detect everything)
-    # sensitivity=12 → conf=0.065 (balanced default)
-    # sensitivity=50 → conf=0.255 (strict, only confident detections)
-    conf_threshold = 0.005 + sensitivity * 0.005
+    # Preprocessing: bilateral filter preserves edges, smooths wall texture
+    filtered = cv2.bilateralFilter(img, 9, 75, 75)
+    gray = cv2.cvtColor(filtered, cv2.COLOR_BGR2GRAY)
 
-    results = model.predict(
-        img,
-        conf=conf_threshold,
-        iou=0.4,
-        imgsz=1024,
-        verbose=False,
+    # Fill outside mask with wall median so detectors don't trigger on
+    # the mask boundary itself
+    wall_gray_vals = gray[mask == 255]
+    if len(wall_gray_vals) < 50:
+        return []
+    median_val = int(np.median(wall_gray_vals))
+    gray_for_detect = gray.copy()
+    gray_for_detect[mask == 0] = median_val
+
+    candidates = []
+
+    # ── Method 1: MSER ──────────────────────────────────────────────
+    mser_delta = max(2, int(sensitivity / 3))         # 1→2  12→4  50→16
+    max_var = 0.15 + sensitivity / 200.0              # 0.155 … 0.40
+
+    mser = cv2.MSER_create(
+        _delta=mser_delta,
+        _min_area=min_area,
+        _max_area=max_area,
+        _max_variation=max_var,
+    )
+    regions, bboxes = mser.detectRegions(gray_for_detect)
+
+    for region, bbox in zip(regions, bboxes):
+        x, y, rw, rh = bbox
+        if rw < 5 or rh < 5:
+            continue
+        area = len(region)
+        if area < min_area or area > max_area:
+            continue
+        cx, cy = x + rw // 2, y + rh // 2
+        if cy >= h or cx >= w or mask[cy, cx] == 0:
+            continue
+
+        hull = cv2.convexHull(region.reshape(-1, 1, 2))
+        hull_area = cv2.contourArea(hull)
+        if hull_area == 0:
+            continue
+
+        solidity = area / hull_area
+        aspect = max(rw, rh) / (min(rw, rh) + 1)
+        rect_area = rw * rh
+        rectangularity = area / rect_area if rect_area > 0 else 0
+
+        if solidity < 0.5 or aspect > 5.0 or rectangularity < 0.35:
+            continue
+
+        score = solidity * rectangularity
+        candidates.append({
+            "bbox": (x, y, rw, rh),
+            "centroid": (cx, cy),
+            "area": int(area),
+            "contour": hull,
+            "score": score,
+        })
+
+    # ── Method 2: Canny edges → closed contours ────────────────────
+    # Auto-threshold using Otsu on the wall pixels
+    median_v = float(np.median(wall_gray_vals))
+    canny_lo = int(max(10, median_v * 0.33))
+    canny_hi = int(min(250, median_v * 1.0))
+
+    edges = cv2.Canny(gray_for_detect, canny_lo, canny_hi)
+    edges = cv2.bitwise_and(edges, mask)
+
+    # Close small edge gaps so contours form closed shapes
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, k3, iterations=2)
+
+    contours_edge, _ = cv2.findContours(
+        edges_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    objects = []
-    for result in results:
-        for box in result.boxes:
-            class_id = int(box.cls[0])
-            class_name = result.names[class_id]
+    for cnt in contours_edge:
+        area = cv2.contourArea(cnt)
+        if area < min_area or area > max_area:
+            continue
+        x, y, rw, rh = cv2.boundingRect(cnt)
+        cx, cy = x + rw // 2, y + rh // 2
+        if cy >= h or cx >= w or mask[cy, cx] == 0:
+            continue
 
-            # Skip null / background classes
-            if class_name in _YOLO_NULL_CLASSES:
-                continue
+        peri = cv2.arcLength(cnt, True)
+        if peri == 0:
+            continue
+        approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+        if len(approx) < 4 or len(approx) > 12:
+            continue
 
-            # Bounding box
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            x, y = int(x1), int(y1)
-            bw, bh = int(x2 - x1), int(y2 - y1)
+        hull = cv2.convexHull(cnt)
+        hull_area = cv2.contourArea(hull)
+        if hull_area == 0:
+            continue
 
-            # Skip detections smaller than minimum size
-            if bw < min_obj_diameter or bh < min_obj_diameter:
-                continue
+        solidity = area / hull_area
+        aspect = max(rw, rh) / (min(rw, rh) + 1)
+        rect_area = rw * rh
+        rectangularity = area / rect_area if rect_area > 0 else 0
 
-            # Centroid must be inside the user's wall mask
-            cx, cy = x + bw // 2, y + bh // 2
-            if cy >= h or cx >= w or mask[cy, cx] == 0:
-                continue
+        if solidity < 0.45 or aspect > 5.0 or rectangularity < 0.3:
+            continue
 
-            confidence = float(box.conf[0])
+        score = solidity * rectangularity * 0.9  # slight preference for MSER
+        candidates.append({
+            "bbox": (x, y, rw, rh),
+            "centroid": (cx, cy),
+            "area": int(area),
+            "contour": hull,
+            "score": score,
+        })
 
-            # Create rectangular contour from bbox (for annotation drawing)
-            contour = np.array([
-                [[x, y]], [[x + bw, y]],
-                [[x + bw, y + bh]], [[x, y + bh]]
-            ], dtype=np.int32)
-
-            objects.append({
-                "centroid": (cx, cy),
-                "bbox": (x, y, bw, bh),
-                "area": bw * bh,
-                "contour": contour,
-                "score": confidence,
-                "class": class_name,
-            })
-
+    # ── Merge overlapping detections ──
+    objects = _nms_candidates(candidates, iou_threshold=0.35)
     return objects
 
 
