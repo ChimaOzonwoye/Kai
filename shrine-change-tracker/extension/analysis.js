@@ -349,12 +349,14 @@ function updateMaskStatus() {
   const clearBtn = document.getElementById("clear-mask-btn");
   const analyzeBtn = document.getElementById("btn-to-step4");
 
+  // Analyze is always enabled — wall marking is optional
+  analyzeBtn.disabled = false;
+
   if (maskClosed) {
     status.textContent = `Wall outline complete (${maskPolygon.length} points). Ready to analyze.`;
     status.style.color = "#2ed573";
     undoBtn.classList.add("hidden");
     clearBtn.classList.remove("hidden");
-    analyzeBtn.disabled = false;
   } else if (maskPolygon.length > 0) {
     const need = Math.max(0, 3 - maskPolygon.length);
     status.textContent = need > 0
@@ -363,13 +365,11 @@ function updateMaskStatus() {
     status.style.color = "#4a69bd";
     undoBtn.classList.remove("hidden");
     clearBtn.classList.remove("hidden");
-    analyzeBtn.disabled = true;
   } else {
-    status.textContent = "Click on the image to start outlining the wall";
+    status.textContent = "Optional: Outline the wall for focused analysis, or click Analyze to scan the full image.";
     status.style.color = "#888";
     undoBtn.classList.add("hidden");
     clearBtn.classList.add("hidden");
-    analyzeBtn.disabled = true;
   }
 }
 
@@ -416,29 +416,33 @@ async function runAnalysis() {
   showLoading("Aligning images...");
   await autoAlignAll();
 
-  showLoading("Detecting items on the wall across all years...");
+  const n = panoramas.length;
+  showLoading(`Analyzing ${n} images with AI... (~${n * 4} seconds)`);
 
   const panoList = panoramas.map((p) => {
     const a = getAngles(p.pano_id);
     return { pano_id: p.pano_id, date: p.date, heading: a.heading, pitch: a.pitch };
   });
 
-  const body = {
-    panoramas: panoList,
-    cell_size: parseInt(document.getElementById("cell-size").value),
-    threshold: parseInt(document.getElementById("threshold").value),
-  };
+  const body = { panoramas: panoList };
   if (maskClosed && maskPolygon.length >= 3) body.mask_polygon = maskPolygon;
 
-  const resp = await fetch(`${SERVER}/compare-all`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  try {
+    const resp = await fetch(`${SERVER}/compare-all`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
 
-  const data = await resp.json();
-  pairResults = data.pairs || [];
-  perImageData = data.per_image || [];
+    const data = await resp.json();
+    pairResults = data.pairs || [];
+    perImageData = data.per_image || [];
+  } catch (err) {
+    console.error("Analysis failed:", err);
+    document.getElementById("results-summary").textContent =
+      "Analysis failed. Make sure Ollama is running with gemma3:4b model.";
+    document.getElementById("results-summary").style.color = "#ff4757";
+  }
   hideLoading();
 }
 
@@ -450,18 +454,26 @@ function renderResults() {
 }
 
 function renderSummary() {
-  const valid = pairResults.filter((p) => !p.error);
-  if (valid.length === 0 || perImageData.length === 0) return;
+  if (perImageData.length === 0) return;
 
   const first = perImageData[0];
   const last = perImageData[perImageData.length - 1];
-  const totalNew = valid.reduce((s, p) => s + (p.new_count || 0), 0);
-  const totalGone = valid.reduce((s, p) => s + (p.gone_count || 0), 0);
 
-  let text = `Tracked items on this wall from ${first.date} to ${last.date} (${perImageData.length} time periods). `;
-  text += `${first.items_detected} items detected in ${first.date}, ${last.items_detected} in ${last.date}. `;
-  if (totalNew > 0 || totalGone > 0) {
-    text += `Across all periods: ${totalNew} items appeared, ${totalGone} disappeared.`;
+  let text = `Tracked items from ${first.date} to ${last.date} (${perImageData.length} time periods). `;
+  text += `${first.total || 0} items in ${first.date}, ${last.total || 0} in ${last.date}. `;
+
+  // Sum up net changes across all pairs
+  let totalAdded = 0, totalRemoved = 0;
+  for (const pair of pairResults) {
+    if (!pair.delta) continue;
+    for (const k of ["plaques", "flowers", "candles", "pictures", "other"]) {
+      const d = pair.delta[k] || 0;
+      if (d > 0) totalAdded += d;
+      else if (d < 0) totalRemoved += Math.abs(d);
+    }
+  }
+  if (totalAdded > 0 || totalRemoved > 0) {
+    text += `Net changes: +${totalAdded} added, -${totalRemoved} removed.`;
   }
   document.getElementById("results-summary").textContent = text;
 }
@@ -484,7 +496,7 @@ function renderChart() {
   ctx.fillStyle = "#1a1a2e";
   ctx.fillRect(0, 0, W, H);
 
-  const maxItems = Math.max(5, ...perImageData.map((d) => d.items_detected));
+  const maxItems = Math.max(5, ...perImageData.map((d) => d.total || 0));
 
   // Y axis + gridlines
   ctx.strokeStyle = "#333"; ctx.lineWidth = 1;
@@ -503,8 +515,8 @@ function renderChart() {
   canvas._bars = [];
 
   perImageData.forEach((d, i) => {
-    const items = d.items_detected;
-    const barH = (items / maxItems) * cH;
+    const total = d.total || 0;
+    const barH = (total / maxItems) * cH;
     const x = padL + gap + i * (barW + gap);
     const y = padT + cH - barH;
 
@@ -514,7 +526,7 @@ function renderChart() {
 
     // Item count on top
     ctx.fillStyle = "#ccc"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
-    ctx.fillText(`${items}`, x + barW / 2, y - 6);
+    ctx.fillText(`${total}`, x + barW / 2, y - 6);
 
     // Date label
     ctx.save();
@@ -541,7 +553,6 @@ document.getElementById("chart-canvas").addEventListener("click", (e) => {
   const x = e.clientX - rect.left;
   for (const bar of canvas._bars || []) {
     if (x >= bar.x - 5 && x <= bar.x + bar.w + 5) {
-      // A year at index i is the "A" of pair i and "B" of pair i-1
       const pairIdx = Math.min(bar.idx, pairResults.length - 1);
       const card = document.getElementById(`pair-card-${pairIdx}`);
       if (card) {
@@ -565,32 +576,60 @@ function renderPairCards() {
     card.className = "pair-card";
     card.id = `pair-card-${idx}`;
 
-    const sameCount = pair.same_count || 0;
-    const newCount = pair.new_count || 0;
-    const goneCount = pair.gone_count || 0;
+    const ca = pair.counts_a || {};
+    const cb = pair.counts_b || {};
+    const delta = pair.delta || {};
+
+    // Build delta badges
+    let deltaBadges = "";
+    for (const k of ["plaques", "flowers", "candles", "pictures", "other"]) {
+      const d = delta[k] || 0;
+      if (d > 0) {
+        deltaBadges += `<span class="count-badge delta-up">+${d} ${k}</span>`;
+      } else if (d < 0) {
+        deltaBadges += `<span class="count-badge delta-down">${d} ${k}</span>`;
+      }
+    }
+    if (!deltaBadges) {
+      deltaBadges = `<span class="count-badge delta-same">No changes</span>`;
+    }
+
+    // Build counts rows
+    function countsHTML(counts) {
+      const cats = ["plaques", "flowers", "candles", "pictures", "other"];
+      return cats
+        .filter((k) => (counts[k] || 0) > 0)
+        .map((k) => `<span class="cat-count">${counts[k]} ${k}</span>`)
+        .join("") || `<span class="cat-count">0 items</span>`;
+    }
+
+    const imgA = pair.crop_a_url ? `<img src="${SERVER}${pair.crop_a_url}" alt="${pair.date_a}">` : "";
+    const imgB = pair.crop_b_url ? `<img src="${SERVER}${pair.crop_b_url}" alt="${pair.date_b}">` : "";
 
     card.innerHTML = `
       <div class="pair-header">
         <h3>${pair.date_a} \u2192 ${pair.date_b}</h3>
-        <div class="pair-counts">
-          <span class="count-badge count-same">${sameCount} same</span>
-          <span class="count-badge count-new">${newCount} new</span>
-          <span class="count-badge count-gone">${goneCount} gone</span>
-        </div>
+        <div class="pair-deltas">${deltaBadges}</div>
       </div>
       <p class="pair-summary">${pair.summary}</p>
+      <div class="pair-counts-row">
+        <div class="counts-col">
+          <div class="counts-label">${pair.date_a} (${ca.total || 0} items)</div>
+          <div class="counts-cats">${countsHTML(ca)}</div>
+        </div>
+        <div class="counts-col">
+          <div class="counts-label">${pair.date_b} (${cb.total || 0} items)</div>
+          <div class="counts-cats">${countsHTML(cb)}</div>
+        </div>
+      </div>
       <div class="pair-images-stacked">
         <div class="pair-img-full">
-          <h4>${pair.date_a} (${pair.items_a} items detected)</h4>
-          <div class="img-wrapper">
-            <img src="${SERVER}${pair.annotated_a_url}" alt="${pair.date_a} annotated">
-          </div>
+          <h4>${pair.date_a}</h4>
+          <div class="img-wrapper">${imgA}</div>
         </div>
         <div class="pair-img-full">
-          <h4>${pair.date_b} (${pair.items_b} items detected)</h4>
-          <div class="img-wrapper">
-            <img src="${SERVER}${pair.annotated_b_url}" alt="${pair.date_b} annotated">
-          </div>
+          <h4>${pair.date_b}</h4>
+          <div class="img-wrapper">${imgB}</div>
         </div>
       </div>
     `;
@@ -599,25 +638,13 @@ function renderPairCards() {
   });
 }
 
-// ── Slider updates ──
-document.getElementById("cell-size").addEventListener("input", (e) => {
-  document.getElementById("cell-size-val").textContent = e.target.value;
-});
-document.getElementById("threshold").addEventListener("input", (e) => {
-  document.getElementById("threshold-val").textContent = e.target.value;
-});
-document.getElementById("reanalyze-btn").addEventListener("click", async () => {
-  goToStep(4);
-  await runAnalysis();
-  renderResults();
-});
-
 // ── Navigation ──
 document.getElementById("btn-to-step2").addEventListener("click", () => goToStep(2));
 document.getElementById("btn-back-to-1").addEventListener("click", () => goToStep(1));
 document.getElementById("btn-to-step3").addEventListener("click", async () => {
   goToStep(3);
   await loadMaskImage();
+  updateMaskStatus();
 });
 document.getElementById("btn-back-to-2").addEventListener("click", () => goToStep(2));
 document.getElementById("btn-to-step4").addEventListener("click", async () => {
@@ -632,6 +659,25 @@ async function init() {
   initStep1();
   goToStep(1);
   try {
+    // Check Ollama status
+    const healthResp = await fetch(`${SERVER}/health`);
+    const healthData = await healthResp.json();
+
+    if (healthData.ollama !== "connected") {
+      document.getElementById("server-dot").className = "dot dot-warn";
+      document.getElementById("server-text").textContent = "Ollama not running";
+      document.getElementById("ollama-warning").classList.remove("hidden");
+    } else if (!healthData.model) {
+      document.getElementById("server-dot").className = "dot dot-warn";
+      document.getElementById("server-text").textContent = "AI model not found";
+      document.getElementById("ollama-warning").classList.remove("hidden");
+      document.getElementById("ollama-warning").textContent =
+        "Model not installed. Run: ollama pull gemma3:4b";
+    } else {
+      document.getElementById("server-dot").className = "dot dot-ok";
+      document.getElementById("server-text").textContent = "Server + AI ready";
+    }
+
     await searchPanoramas();
     if (panoramas.length === 0) {
       hideLoading();

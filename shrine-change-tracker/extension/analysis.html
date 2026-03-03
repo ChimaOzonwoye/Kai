@@ -41,6 +41,7 @@
         <span id="server-dot" class="dot dot-ok"></span>
         <span id="server-text">Server connected</span>
       </div>
+      <p id="ollama-warning" class="ollama-warning hidden">Ollama is not running. Install Ollama and run: ollama pull gemma3:4b</p>
       <p id="pano-found-msg" class="pano-found-msg"></p>
       <button id="btn-to-step2" class="btn btn-primary" disabled>Continue to Timeline</button>
     </div>
@@ -69,8 +70,8 @@
   <!-- STEP 3 -->
   <section id="step-3" class="wizard-step hidden">
     <div class="step-content step-content-wide">
-      <h2>Mark the Wall</h2>
-      <p class="step-desc">Click to trace the outline of the wall. Only the area inside your outline will be analyzed across all years.</p>
+      <h2>Mark the Wall (Optional)</h2>
+      <p class="step-desc">Draw a polygon around the wall area for more focused analysis. Or skip this and the AI will analyze the entire image.</p>
       <p class="step-hint">Click to add points. Click the green starting dot (or double-click) to close the shape.</p>
       <div id="mask-container" class="mask-container">
         <canvas id="mask-canvas"></canvas>
@@ -78,11 +79,11 @@
       <div class="mask-actions">
         <button id="undo-point-btn" class="btn btn-secondary hidden">Undo Last Point</button>
         <button id="clear-mask-btn" class="btn btn-secondary hidden">Clear All</button>
-        <span id="mask-status" class="mask-status">Click on the image to start outlining the wall</span>
+        <span id="mask-status" class="mask-status">Optional: Outline the wall for focused analysis, or click Analyze to scan the full image.</span>
       </div>
       <div class="step-nav">
         <button id="btn-back-to-2" class="btn btn-secondary">Back</button>
-        <button id="btn-to-step4" class="btn btn-primary" disabled>Analyze Changes</button>
+        <button id="btn-to-step4" class="btn btn-primary">Analyze Changes</button>
       </div>
     </div>
   </section>
@@ -92,13 +93,6 @@
     <div class="step-content step-content-wide">
       <h2>Results</h2>
       <p id="results-summary" class="step-desc"></p>
-
-      <!-- Color Legend -->
-      <div class="color-legend">
-        <span class="legend-item"><span class="legend-swatch legend-red"></span> Same (present in both years)</span>
-        <span class="legend-item"><span class="legend-swatch legend-yellow"></span> New (appeared in this year)</span>
-        <span class="legend-item"><span class="legend-swatch legend-green"></span> Gone (disappeared since previous year)</span>
-      </div>
 
       <!-- Chart: items per year -->
       <div id="chart-section">
@@ -110,26 +104,6 @@
 
       <!-- Pairwise comparison cards -->
       <div id="pairs-container"></div>
-
-      <!-- Advanced (hidden by default) -->
-      <details id="advanced-section" class="advanced-section">
-        <summary>Advanced Settings</summary>
-        <div class="advanced-content">
-          <div class="advanced-controls">
-            <div class="control-group">
-              <label>Min Object Size: <strong id="cell-size-val">15</strong>px</label>
-              <input type="range" id="cell-size" min="5" max="50" value="15" step="1">
-              <span class="control-hint">Smaller = detect smaller items. Larger = ignore small items.</span>
-            </div>
-            <div class="control-group">
-              <label>Detection Sensitivity: <strong id="threshold-val">12</strong></label>
-              <input type="range" id="threshold" min="1" max="50" value="12" step="1">
-              <span class="control-hint">Lower = more sensitive (detects more). Higher = stricter (fewer detections).</span>
-            </div>
-            <button id="reanalyze-btn" class="btn btn-secondary">Re-analyze</button>
-          </div>
-        </div>
-      </details>
 
       <div class="step-nav">
         <button id="btn-back-to-3" class="btn btn-secondary">Back to Wall Selection</button>
