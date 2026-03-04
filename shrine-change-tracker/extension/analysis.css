@@ -94,7 +94,7 @@ body {
 .dot-ok { background: #2ed573; }
 .dot-warn { background: #ffa502; }
 .dot-err { background: #ff4757; }
-.ollama-warning {
+.engine-warning {
   font-size: 13px; color: #ffa502; margin-bottom: 16px;
   padding: 10px 14px; background: rgba(255, 165, 2, 0.1);
   border: 1px solid rgba(255, 165, 2, 0.3); border-radius: 6px;
@@ -136,19 +136,19 @@ body {
 .ref-thumb { width: 80px; height: 40px; object-fit: cover; border-radius: 4px; background: #111; }
 .ref-date { font-size: 14px; font-weight: 600; color: #fff; }
 
-/* Step 3: Wall Mask (big canvas) */
-.mask-container {
-  background: #111; border-radius: 8px; overflow: hidden;
-  position: relative; cursor: crosshair;
+/* Step 3: Analysis Progress */
+.analysis-progress { text-align: center; }
+.progress-bar-track {
+  width: 100%; max-width: 500px; height: 8px;
+  background: #2a2a4a; border-radius: 4px;
+  margin: 16px auto 0; overflow: hidden;
 }
-.mask-container canvas {
-  width: 100%; height: auto; display: block;
-  user-select: none; -webkit-user-select: none;
+.progress-bar-fill {
+  height: 100%; background: #4a69bd;
+  border-radius: 4px; transition: width 0.3s ease;
 }
-.mask-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
-.mask-status { font-size: 13px; color: #888; }
 
-/* Step 4: Results */
+/* Results */
 .chart-container {
   background: #1a1a2e; border-radius: 10px; padding: 24px;
   margin-bottom: 32px; overflow-x: auto;

@@ -16,18 +16,15 @@
       <span class="step-dot" data-step="2">2</span>
       <span class="step-line"></span>
       <span class="step-dot" data-step="3">3</span>
-      <span class="step-line"></span>
-      <span class="step-dot" data-step="4">4</span>
     </div>
   </header>
 
-  <div id="loading" class="loading-overlay">
+  <div id="loading" class="loading-overlay hidden">
     <div class="spinner"></div>
     <p id="loading-text">Connecting...</p>
-    <button id="cancel-analysis-btn" class="btn btn-secondary hidden" onclick="cancelAnalysis()" style="margin-top: 16px;">Cancel</button>
   </div>
 
-  <!-- STEP 1 -->
+  <!-- STEP 1: Location -->
   <section id="step-1" class="wizard-step">
     <div class="step-content">
       <h2>Location Detected</h2>
@@ -40,15 +37,15 @@
       </div>
       <div class="server-status">
         <span id="server-dot" class="dot dot-ok"></span>
-        <span id="server-text">Server connected</span>
+        <span id="server-text">Connecting...</span>
       </div>
-      <p id="ollama-warning" class="ollama-warning hidden">Ollama is not running. Install Ollama and run: ollama pull gemma3:4b</p>
+      <p id="engine-warning" class="engine-warning hidden">The image analysis engine is not running. See the README for setup instructions.</p>
       <p id="pano-found-msg" class="pano-found-msg"></p>
       <button id="btn-to-step2" class="btn btn-primary" disabled>Continue to Timeline</button>
     </div>
   </section>
 
-  <!-- STEP 2 -->
+  <!-- STEP 2: Timeline -->
   <section id="step-2" class="wizard-step hidden">
     <div class="step-content">
       <h2>Timeline</h2>
@@ -63,51 +60,42 @@
       </div>
       <div class="step-nav">
         <button id="btn-back-to-1" class="btn btn-secondary">Back</button>
-        <button id="btn-to-step3" class="btn btn-primary">Mark the Wall</button>
+        <button id="btn-to-step3" class="btn btn-primary">Analyze Changes</button>
       </div>
     </div>
   </section>
 
-  <!-- STEP 3 -->
+  <!-- STEP 3: Results -->
   <section id="step-3" class="wizard-step hidden">
     <div class="step-content step-content-wide">
-      <h2>Mark the Wall (Optional)</h2>
-      <p class="step-desc">Draw a polygon around the wall area for more focused analysis. Or skip this and the AI will analyze the entire image.</p>
-      <p class="step-hint">Click to add points. Click the green starting dot (or double-click) to close the shape.</p>
-      <div id="mask-container" class="mask-container">
-        <canvas id="mask-canvas"></canvas>
-      </div>
-      <div class="mask-actions">
-        <button id="undo-point-btn" class="btn btn-secondary hidden">Undo Last Point</button>
-        <button id="clear-mask-btn" class="btn btn-secondary hidden">Clear All</button>
-        <span id="mask-status" class="mask-status">Optional: Outline the wall for focused analysis, or click Analyze to scan the full image.</span>
-      </div>
-      <div class="step-nav">
-        <button id="btn-back-to-2" class="btn btn-secondary">Back</button>
-        <button id="btn-to-step4" class="btn btn-primary">Analyze Changes</button>
-      </div>
-    </div>
-  </section>
 
-  <!-- STEP 4 -->
-  <section id="step-4" class="wizard-step hidden">
-    <div class="step-content step-content-wide">
-      <h2>Results</h2>
-      <p id="results-summary" class="step-desc"></p>
-
-      <!-- Chart: items per year -->
-      <div id="chart-section">
-        <h3>Items Detected Over Time</h3>
-        <div id="chart-container" class="chart-container">
-          <canvas id="chart-canvas"></canvas>
+      <!-- Progress (visible during analysis) -->
+      <div id="analysis-progress" class="analysis-progress hidden">
+        <h2>Analyzing...</h2>
+        <p id="progress-text" class="step-desc">Starting analysis...</p>
+        <div class="progress-bar-track">
+          <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
         </div>
+        <button id="cancel-btn" class="btn btn-secondary" style="margin-top: 16px;">Cancel</button>
       </div>
 
-      <!-- Pairwise comparison cards -->
-      <div id="pairs-container"></div>
+      <!-- Results (visible after analysis) -->
+      <div id="results-section" class="hidden">
+        <h2>Results</h2>
+        <p id="results-summary" class="step-desc"></p>
 
-      <div class="step-nav">
-        <button id="btn-back-to-3" class="btn btn-secondary">Back to Wall Selection</button>
+        <div id="chart-section">
+          <h3>Items Detected Over Time</h3>
+          <div id="chart-container" class="chart-container">
+            <canvas id="chart-canvas"></canvas>
+          </div>
+        </div>
+
+        <div id="pairs-container"></div>
+
+        <div class="step-nav">
+          <button id="btn-back-to-2" class="btn btn-secondary">Back to Timeline</button>
+        </div>
       </div>
     </div>
   </section>

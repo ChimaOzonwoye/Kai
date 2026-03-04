@@ -6,36 +6,27 @@ const LNG = parseFloat(params.get("lng"));
 const HEADING = parseFloat(params.get("heading"));
 const PITCH = parseFloat(params.get("pitch"));
 
-const COMPARE_W = 1600;
-const COMPARE_H = 800;
 const THUMB_W = 180;
 const THUMB_H = 90;
 
-// State
+// ── State ──
 let panoramas = [];
 let panoAngles = {};
 let refPanoIdx = 0;
-let maskPolygon = [];
-let maskClosed = false;
-let maskImage = null;
-let maskCanvasW = COMPARE_W;
-let maskCanvasH = COMPARE_H;
-let pairResults = [];
 let perImageData = [];
-let currentStep = 1;
+let pairResults = [];
+
+let _analysisController = null;
+let _analysisCancelled = false;
 
 // Adjust modal
 let adjustingPanoIdx = null;
 let adjustTempHeading = 0;
 let adjustTempPitch = 0;
-let _analysisController = null;
-let _analysisCancelled = false;
 
 const loading = document.getElementById("loading");
 const loadingText = document.getElementById("loading-text");
 const adjustModal = document.getElementById("adjust-modal");
-const maskCanvas = document.getElementById("mask-canvas");
-const maskCtx = maskCanvas.getContext("2d");
 
 function thumbnailUrl(panoId, heading, pitch, w = THUMB_W, h = THUMB_H) {
   return `${SERVER}/thumbnail?pano_id=${panoId}&heading=${heading}&pitch=${pitch}&w=${w}&h=${h}`;
@@ -45,25 +36,21 @@ function getAngles(panoId) {
   return panoAngles[panoId] || { heading: HEADING, pitch: PITCH };
 }
 
-function showLoading(msg, cancelable = false) {
+function showLoading(msg) {
   loadingText.textContent = msg;
-  const cancelBtn = document.getElementById("cancel-analysis-btn");
-  if (cancelBtn) cancelBtn.classList.toggle("hidden", !cancelable);
   loading.classList.remove("hidden");
 }
 
 function hideLoading() {
   loading.classList.add("hidden");
-  const cancelBtn = document.getElementById("cancel-analysis-btn");
-  if (cancelBtn) cancelBtn.classList.add("hidden");
 }
 
 // ── Wizard Navigation ──
 function goToStep(step) {
-  currentStep = step;
-  ["step-1", "step-2", "step-3", "step-4"].forEach((id) =>
-    document.getElementById(id).classList.add("hidden")
-  );
+  ["step-1", "step-2", "step-3"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add("hidden");
+  });
   document.getElementById(`step-${step}`).classList.remove("hidden");
   document.querySelectorAll(".step-dot").forEach((dot) => {
     const s = parseInt(dot.dataset.step);
@@ -120,7 +107,10 @@ function buildTimeline() {
     adjBtn.className = "adjust-btn";
     adjBtn.textContent = "\u2699";
     adjBtn.title = "Adjust viewing angle";
-    adjBtn.addEventListener("click", (e) => { e.stopPropagation(); openAdjustModal(idx); });
+    adjBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openAdjustModal(idx);
+    });
 
     item.addEventListener("click", () => selectReference(idx));
     item.appendChild(img);
@@ -143,7 +133,9 @@ function updateRefPicker() {
   document.getElementById("ref-picker").classList.remove("hidden");
   const pano = panoramas[refPanoIdx];
   const angles = getAngles(pano.pano_id);
-  document.getElementById("ref-thumb").src = thumbnailUrl(pano.pano_id, angles.heading, angles.pitch);
+  document.getElementById("ref-thumb").src = thumbnailUrl(
+    pano.pano_id, angles.heading, angles.pitch
+  );
   document.getElementById("ref-date").textContent = pano.date;
 }
 
@@ -154,6 +146,7 @@ function openAdjustModal(idx) {
   const angles = getAngles(pano.pano_id);
   adjustTempHeading = angles.heading - HEADING;
   adjustTempPitch = angles.pitch - PITCH;
+
   document.getElementById("adjust-pano-date").textContent = `Date: ${pano.date}`;
   document.getElementById("adjust-heading").value = adjustTempHeading;
   document.getElementById("adjust-pitch").value = adjustTempPitch;
@@ -164,8 +157,9 @@ function openAdjustModal(idx) {
 }
 
 function updateAdjustPreview(h, p) {
-  document.getElementById("adjust-preview-img").src =
-    thumbnailUrl(panoramas[adjustingPanoIdx].pano_id, h, p, 400, 200);
+  document.getElementById("adjust-preview-img").src = thumbnailUrl(
+    panoramas[adjustingPanoIdx].pano_id, h, p, 400, 200
+  );
 }
 
 document.getElementById("adjust-heading").addEventListener("input", (e) => {
@@ -179,7 +173,8 @@ document.getElementById("adjust-pitch").addEventListener("input", (e) => {
   updateAdjustPreview(HEADING + adjustTempHeading, PITCH + adjustTempPitch);
 });
 document.getElementById("adjust-reset").addEventListener("click", () => {
-  adjustTempHeading = 0; adjustTempPitch = 0;
+  adjustTempHeading = 0;
+  adjustTempPitch = 0;
   document.getElementById("adjust-heading").value = 0;
   document.getElementById("adjust-pitch").value = 0;
   document.getElementById("adjust-heading-val").textContent = "0";
@@ -191,199 +186,19 @@ document.getElementById("adjust-cancel").addEventListener("click", () => {
 });
 document.getElementById("adjust-apply").addEventListener("click", () => {
   const pano = panoramas[adjustingPanoIdx];
-  panoAngles[pano.pano_id] = { heading: HEADING + adjustTempHeading, pitch: PITCH + adjustTempPitch };
+  panoAngles[pano.pano_id] = {
+    heading: HEADING + adjustTempHeading,
+    pitch: PITCH + adjustTempPitch,
+  };
   const items = document.querySelectorAll(".timeline-item");
   if (items[adjustingPanoIdx]) {
     const angles = getAngles(pano.pano_id);
-    items[adjustingPanoIdx].querySelector("img").src = thumbnailUrl(pano.pano_id, angles.heading, angles.pitch);
+    items[adjustingPanoIdx].querySelector("img").src = thumbnailUrl(
+      pano.pano_id, angles.heading, angles.pitch
+    );
   }
   if (adjustingPanoIdx === refPanoIdx) updateRefPicker();
   adjustModal.classList.add("hidden");
-});
-
-// ── Step 3: Polygon Mask (High-Res) ──
-async function loadMaskImage() {
-  showLoading("Loading high-resolution image for wall marking...");
-  const pano = panoramas[refPanoIdx];
-  const angles = getAngles(pano.pano_id);
-
-  const resp = await fetch(`${SERVER}/wall-crop`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pano_id: pano.pano_id, heading: angles.heading, pitch: angles.pitch }),
-  });
-  const data = await resp.json();
-  hideLoading();
-
-  if (data.error) { console.error(data.error); return; }
-
-  maskCanvasW = data.width;
-  maskCanvasH = data.height;
-
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => {
-    maskImage = img;
-    maskCanvas.width = maskCanvasW;
-    maskCanvas.height = maskCanvasH;
-    drawMaskCanvas();
-  };
-  img.src = `${SERVER}${data.image_url}`;
-}
-
-function drawMaskCanvas() {
-  if (!maskImage) return;
-  maskCtx.drawImage(maskImage, 0, 0, maskCanvasW, maskCanvasH);
-
-  if (maskPolygon.length === 0) return;
-
-  const pts = maskPolygon.map((p) => ({
-    x: p.x * maskCanvasW, y: p.y * maskCanvasH,
-  }));
-
-  if (maskClosed && pts.length >= 3) {
-    maskCtx.save();
-    maskCtx.beginPath();
-    maskCtx.rect(0, 0, maskCanvasW, maskCanvasH);
-    maskCtx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) maskCtx.lineTo(pts[i].x, pts[i].y);
-    maskCtx.closePath();
-    maskCtx.fillStyle = "rgba(0, 0, 0, 0.55)";
-    maskCtx.fill("evenodd");
-    maskCtx.restore();
-
-    maskCtx.beginPath();
-    maskCtx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) maskCtx.lineTo(pts[i].x, pts[i].y);
-    maskCtx.closePath();
-    maskCtx.strokeStyle = "#4a69bd";
-    maskCtx.lineWidth = 3;
-    maskCtx.stroke();
-
-    pts.forEach((pt) => {
-      maskCtx.beginPath();
-      maskCtx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
-      maskCtx.fillStyle = "#4a69bd";
-      maskCtx.fill();
-      maskCtx.strokeStyle = "#fff";
-      maskCtx.lineWidth = 1.5;
-      maskCtx.stroke();
-    });
-  } else {
-    maskCtx.beginPath();
-    maskCtx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) maskCtx.lineTo(pts[i].x, pts[i].y);
-    maskCtx.strokeStyle = "#4a69bd";
-    maskCtx.lineWidth = 2;
-    maskCtx.setLineDash([8, 4]);
-    maskCtx.stroke();
-    maskCtx.setLineDash([]);
-
-    pts.forEach((pt, i) => {
-      maskCtx.beginPath();
-      maskCtx.arc(pt.x, pt.y, i === 0 ? 8 : 5, 0, Math.PI * 2);
-      maskCtx.fillStyle = i === 0 ? "#2ed573" : "#4a69bd";
-      maskCtx.fill();
-      maskCtx.strokeStyle = "#fff";
-      maskCtx.lineWidth = 1.5;
-      maskCtx.stroke();
-    });
-
-    if (pts.length >= 3) {
-      maskCtx.beginPath();
-      maskCtx.arc(pts[0].x, pts[0].y, 16, 0, Math.PI * 2);
-      maskCtx.strokeStyle = "rgba(46, 213, 115, 0.5)";
-      maskCtx.lineWidth = 2;
-      maskCtx.stroke();
-    }
-  }
-}
-
-function getMaskCoords(e) {
-  const rect = maskCanvas.getBoundingClientRect();
-  return {
-    x: Math.max(0, Math.min((e.clientX - rect.left) * (maskCanvasW / rect.width), maskCanvasW)),
-    y: Math.max(0, Math.min((e.clientY - rect.top) * (maskCanvasH / rect.height), maskCanvasH)),
-  };
-}
-
-function isNearFirst(pos) {
-  if (maskPolygon.length < 3) return false;
-  const f = maskPolygon[0];
-  const dist = Math.sqrt((pos.x - f.x * maskCanvasW) ** 2 + (pos.y - f.y * maskCanvasH) ** 2);
-  return dist < 20;
-}
-
-maskCanvas.addEventListener("click", (e) => {
-  if (maskClosed) return;
-  e.preventDefault();
-  const pos = getMaskCoords(e);
-  if (isNearFirst(pos)) { maskClosed = true; drawMaskCanvas(); updateMaskStatus(); return; }
-  maskPolygon.push({ x: pos.x / maskCanvasW, y: pos.y / maskCanvasH });
-  drawMaskCanvas();
-  updateMaskStatus();
-});
-
-maskCanvas.addEventListener("dblclick", (e) => {
-  e.preventDefault();
-  if (maskPolygon.length >= 3 && !maskClosed) {
-    maskClosed = true;
-    drawMaskCanvas();
-    updateMaskStatus();
-  }
-});
-
-maskCanvas.addEventListener("mousemove", (e) => {
-  if (maskClosed || maskPolygon.length === 0) return;
-  drawMaskCanvas();
-  const pos = getMaskCoords(e);
-  const last = maskPolygon[maskPolygon.length - 1];
-  maskCtx.beginPath();
-  maskCtx.moveTo(last.x * maskCanvasW, last.y * maskCanvasH);
-  maskCtx.lineTo(pos.x, pos.y);
-  maskCtx.strokeStyle = "rgba(74, 105, 189, 0.5)";
-  maskCtx.lineWidth = 1;
-  maskCtx.setLineDash([4, 4]);
-  maskCtx.stroke();
-  maskCtx.setLineDash([]);
-  maskCanvas.style.cursor = isNearFirst(pos) ? "pointer" : "crosshair";
-});
-
-function updateMaskStatus() {
-  const status = document.getElementById("mask-status");
-  const undoBtn = document.getElementById("undo-point-btn");
-  const clearBtn = document.getElementById("clear-mask-btn");
-  const analyzeBtn = document.getElementById("btn-to-step4");
-
-  // Analyze is always enabled — wall marking is optional
-  analyzeBtn.disabled = false;
-
-  if (maskClosed) {
-    status.textContent = `Wall outline complete (${maskPolygon.length} points). Ready to analyze.`;
-    status.style.color = "#2ed573";
-    undoBtn.classList.add("hidden");
-    clearBtn.classList.remove("hidden");
-  } else if (maskPolygon.length > 0) {
-    const need = Math.max(0, 3 - maskPolygon.length);
-    status.textContent = need > 0
-      ? `${maskPolygon.length} point(s). Add ${need} more to close.`
-      : `${maskPolygon.length} points. Click the green dot to close.`;
-    status.style.color = "#4a69bd";
-    undoBtn.classList.remove("hidden");
-    clearBtn.classList.remove("hidden");
-  } else {
-    status.textContent = "Optional: Outline the wall for focused analysis, or click Analyze to scan the full image.";
-    status.style.color = "#888";
-    undoBtn.classList.add("hidden");
-    clearBtn.classList.add("hidden");
-  }
-}
-
-document.getElementById("undo-point-btn").addEventListener("click", () => {
-  if (maskPolygon.length > 0) { maskPolygon.pop(); maskClosed = false; drawMaskCanvas(); updateMaskStatus(); }
-});
-document.getElementById("clear-mask-btn").addEventListener("click", () => {
-  maskPolygon = []; maskClosed = false; drawMaskCanvas(); updateMaskStatus();
 });
 
 // ── Auto-Align ──
@@ -392,24 +207,28 @@ async function autoAlignAll() {
   const ref = panoramas[refPanoIdx];
   for (let i = 0; i < panoramas.length; i++) {
     if (i === refPanoIdx) continue;
-    showLoading(`Aligning image ${i + 1} of ${panoramas.length}...`);
+    updateProgress(
+      `Aligning image ${i + 1} of ${panoramas.length}...`,
+      i / panoramas.length * 0.2
+    );
     try {
-      const body = {
-        ref_pano_id: ref.pano_id,
-        target_pano_id: panoramas[i].pano_id,
-        heading: HEADING,
-        pitch: PITCH,
-      };
-      if (maskClosed && maskPolygon.length >= 3) body.mask_polygon = maskPolygon;
       const resp = await fetch(`${SERVER}/auto-align`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          ref_pano_id: ref.pano_id,
+          target_pano_id: panoramas[i].pano_id,
+          heading: HEADING,
+          pitch: PITCH,
+        }),
       });
       const result = await resp.json();
       const cur = panoAngles[panoramas[i].pano_id];
       if (cur.heading === HEADING && cur.pitch === PITCH) {
-        panoAngles[panoramas[i].pano_id] = { heading: result.heading, pitch: result.pitch };
+        panoAngles[panoramas[i].pano_id] = {
+          heading: result.heading,
+          pitch: result.pitch,
+        };
       }
     } catch (e) {
       console.warn(`Align failed for ${panoramas[i].pano_id}:`, e);
@@ -417,54 +236,138 @@ async function autoAlignAll() {
   }
 }
 
-// ── Step 4: Run Analysis ──
-async function runAnalysis() {
-  showLoading("Aligning images...");
-  await autoAlignAll();
+// ── Progress UI ──
+function showProgress(text, pct) {
+  document.getElementById("analysis-progress").classList.remove("hidden");
+  document.getElementById("results-section").classList.add("hidden");
+  updateProgress(text, pct);
+}
 
-  const n = panoramas.length;
-  showLoading(`Analyzing ${n} images... (~${n * 4} seconds)`, true);
+function updateProgress(text, pct) {
+  document.getElementById("progress-text").textContent = text;
+  document.getElementById("progress-bar-fill").style.width = `${Math.round(pct * 100)}%`;
+}
+
+function hideProgress() {
+  document.getElementById("analysis-progress").classList.add("hidden");
+  document.getElementById("results-section").classList.remove("hidden");
+}
+
+// ── Step 3: Run Analysis ──
+async function runAnalysis() {
+  showProgress("Aligning images...", 0);
+
   _analysisCancelled = false;
   _analysisController = new AbortController();
 
-  const panoList = panoramas.map((p) => {
-    const a = getAngles(p.pano_id);
-    return { pano_id: p.pano_id, date: p.date, heading: a.heading, pitch: a.pitch };
-  });
+  await autoAlignAll();
 
-  const body = { panoramas: panoList };
-  if (maskClosed && maskPolygon.length >= 3) body.mask_polygon = maskPolygon;
+  if (_analysisCancelled) return;
 
-  try {
-    const resp = await fetch(`${SERVER}/compare-all`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: _analysisController.signal,
-    });
+  perImageData = [];
 
-    const data = await resp.json();
-    pairResults = data.pairs || [];
-    perImageData = data.per_image || [];
-  } catch (err) {
-    if (_analysisCancelled) {
-      document.getElementById("results-summary").textContent = "Analysis cancelled.";
-      document.getElementById("results-summary").style.color = "#888";
-    } else {
-      console.error("Analysis failed:", err);
-      document.getElementById("results-summary").textContent =
-        "Analysis failed. Please check that the server is running and try again.";
-      document.getElementById("results-summary").style.color = "#ff4757";
+  for (let i = 0; i < panoramas.length; i++) {
+    if (_analysisCancelled) break;
+
+    const pct = 0.2 + (i / panoramas.length) * 0.8;
+    updateProgress(`Analyzing image ${i + 1} of ${panoramas.length}...`, pct);
+
+    const p = panoramas[i];
+    const angles = getAngles(p.pano_id);
+
+    try {
+      const resp = await fetch(`${SERVER}/analyze-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pano_id: p.pano_id,
+          heading: angles.heading,
+          pitch: angles.pitch,
+        }),
+        signal: _analysisController.signal,
+      });
+
+      const data = await resp.json();
+      data.date = p.date;
+
+      if (data.error) {
+        data.plaques = 0; data.flowers = 0; data.candles = 0;
+        data.pictures = 0; data.other = 0; data.total = 0;
+      }
+
+      perImageData.push(data);
+
+      // Update chart as each image completes
+      renderChart();
+    } catch (err) {
+      if (_analysisCancelled) break;
+      perImageData.push({
+        date: p.date,
+        plaques: 0, flowers: 0, candles: 0, pictures: 0, other: 0, total: 0,
+        error: err.message,
+      });
     }
   }
+
   _analysisController = null;
-  hideLoading();
+
+  if (_analysisCancelled) {
+    document.getElementById("results-summary").textContent = "Analysis cancelled.";
+    hideProgress();
+    document.getElementById("results-section").classList.remove("hidden");
+    return;
+  }
+
+  computePairResults();
+  hideProgress();
+  renderResults();
 }
 
 function cancelAnalysis() {
   _analysisCancelled = true;
   if (_analysisController) _analysisController.abort();
-  hideLoading();
+}
+
+document.getElementById("cancel-btn").addEventListener("click", cancelAnalysis);
+
+// ── Compute Pair Results ──
+function computePairResults() {
+  pairResults = [];
+  const categories = ["plaques", "flowers", "candles", "pictures", "other"];
+
+  for (let i = 0; i < perImageData.length - 1; i++) {
+    const ca = perImageData[i];
+    const cb = perImageData[i + 1];
+
+    const delta = {};
+    for (const k of categories) {
+      delta[k] = (cb[k] || 0) - (ca[k] || 0);
+    }
+
+    const changes = [];
+    for (const k of categories) {
+      const d = delta[k];
+      if (d > 0) changes.push(`+${d} ${k}`);
+      else if (d < 0) changes.push(`${d} ${k}`);
+    }
+
+    let summary =
+      `${ca.date}: ${ca.total || 0} items. ` +
+      `${cb.date}: ${cb.total || 0} items.`;
+    if (changes.length) summary += ` Changes: ${changes.join(", ")}.`;
+    else summary += " No changes detected.";
+
+    pairResults.push({
+      date_a: ca.date,
+      date_b: cb.date,
+      counts_a: { plaques: ca.plaques || 0, flowers: ca.flowers || 0, candles: ca.candles || 0, pictures: ca.pictures || 0, other: ca.other || 0, total: ca.total || 0 },
+      counts_b: { plaques: cb.plaques || 0, flowers: cb.flowers || 0, candles: cb.candles || 0, pictures: cb.pictures || 0, other: cb.other || 0, total: cb.total || 0 },
+      delta,
+      image_a_url: ca.image_url || null,
+      image_b_url: cb.image_url || null,
+      summary,
+    });
+  }
 }
 
 // ── Render Results ──
@@ -481,26 +384,26 @@ function renderSummary() {
   const last = perImageData[perImageData.length - 1];
 
   let text = `Tracked items from ${first.date} to ${last.date} (${perImageData.length} time periods). `;
-  text += `${first.total || 0} items in ${first.date}, ${last.total || 0} in ${last.date}. `;
+  text += `${first.total || 0} items in ${first.date}, ${last.total || 0} in ${last.date}.`;
 
-  // Sum up net changes across all pairs
   let totalAdded = 0, totalRemoved = 0;
   for (const pair of pairResults) {
-    if (!pair.delta) continue;
     for (const k of ["plaques", "flowers", "candles", "pictures", "other"]) {
-      const d = pair.delta[k] || 0;
+      const d = (pair.delta && pair.delta[k]) || 0;
       if (d > 0) totalAdded += d;
       else if (d < 0) totalRemoved += Math.abs(d);
     }
   }
   if (totalAdded > 0 || totalRemoved > 0) {
-    text += `Net changes: +${totalAdded} added, -${totalRemoved} removed.`;
+    text += ` Net changes: +${totalAdded} added, -${totalRemoved} removed.`;
   }
+
   document.getElementById("results-summary").textContent = text;
 }
 
 function renderChart() {
   const canvas = document.getElementById("chart-canvas");
+  if (!canvas) return;
   const ctx = canvas.getContext("2d");
   if (perImageData.length === 0) return;
 
@@ -519,16 +422,25 @@ function renderChart() {
 
   const maxItems = Math.max(5, ...perImageData.map((d) => d.total || 0));
 
-  // Y axis + gridlines
-  ctx.strokeStyle = "#333"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + cH); ctx.stroke();
-  ctx.fillStyle = "#666"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, padT + cH);
+  ctx.stroke();
+
+  ctx.fillStyle = "#666";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "right";
   const yStep = Math.ceil(maxItems / 5);
   for (let n = 0; n <= maxItems; n += yStep) {
     const y = padT + cH - (n / maxItems) * cH;
     ctx.fillText(`${n}`, padL - 8, y + 4);
     ctx.strokeStyle = "#222";
-    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + cW, y); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + cW, y);
+    ctx.stroke();
   }
 
   const barW = Math.min(50, (cW / perImageData.length) * 0.7);
@@ -537,37 +449,39 @@ function renderChart() {
 
   perImageData.forEach((d, i) => {
     const total = d.total || 0;
-    const barH = (total / maxItems) * cH;
+    const barH = maxItems > 0 ? (total / maxItems) * cH : 0;
     const x = padL + gap + i * (barW + gap);
     const y = padT + cH - barH;
 
-    ctx.fillStyle = "#4a69bd";
+    ctx.fillStyle = d.error ? "#555" : "#4a69bd";
     ctx.fillRect(x, y, barW, barH);
     canvas._bars.push({ x, w: barW, idx: i });
 
-    // Item count on top
-    ctx.fillStyle = "#ccc"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
+    ctx.fillStyle = "#ccc";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
     ctx.fillText(`${total}`, x + barW / 2, y - 6);
 
-    // Date label
     ctx.save();
     ctx.translate(x + barW / 2, padT + cH + 8);
     ctx.rotate(Math.PI / 4);
-    ctx.fillStyle = "#888"; ctx.font = "10px sans-serif"; ctx.textAlign = "left";
+    ctx.fillStyle = "#888";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "left";
     ctx.fillText(d.date, 0, 0);
     ctx.restore();
   });
 
-  // Y axis label
   ctx.save();
   ctx.translate(14, padT + cH / 2);
   ctx.rotate(-Math.PI / 2);
-  ctx.fillStyle = "#666"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
+  ctx.fillStyle = "#666";
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "center";
   ctx.fillText("Items Detected", 0, 0);
   ctx.restore();
 }
 
-// Chart click → scroll to nearest pair card
 document.getElementById("chart-canvas").addEventListener("click", (e) => {
   const canvas = e.target;
   const rect = canvas.getBoundingClientRect();
@@ -577,7 +491,9 @@ document.getElementById("chart-canvas").addEventListener("click", (e) => {
       const pairIdx = Math.min(bar.idx, pairResults.length - 1);
       const card = document.getElementById(`pair-card-${pairIdx}`);
       if (card) {
-        document.querySelectorAll(".pair-card").forEach((c) => c.classList.remove("highlighted"));
+        document.querySelectorAll(".pair-card").forEach((c) =>
+          c.classList.remove("highlighted")
+        );
         card.classList.add("highlighted");
         card.scrollIntoView({ behavior: "smooth", block: "center" });
       }
@@ -591,8 +507,6 @@ function renderPairCards() {
   container.innerHTML = "";
 
   pairResults.forEach((pair, idx) => {
-    if (pair.error) return;
-
     const card = document.createElement("div");
     card.className = "pair-card";
     card.id = `pair-card-${idx}`;
@@ -601,31 +515,27 @@ function renderPairCards() {
     const cb = pair.counts_b || {};
     const delta = pair.delta || {};
 
-    // Build delta badges
     let deltaBadges = "";
     for (const k of ["plaques", "flowers", "candles", "pictures", "other"]) {
       const d = delta[k] || 0;
-      if (d > 0) {
-        deltaBadges += `<span class="count-badge delta-up">+${d} ${k}</span>`;
-      } else if (d < 0) {
-        deltaBadges += `<span class="count-badge delta-down">${d} ${k}</span>`;
-      }
+      if (d > 0) deltaBadges += `<span class="count-badge delta-up">+${d} ${k}</span>`;
+      else if (d < 0) deltaBadges += `<span class="count-badge delta-down">${d} ${k}</span>`;
     }
-    if (!deltaBadges) {
-      deltaBadges = `<span class="count-badge delta-same">No changes</span>`;
-    }
+    if (!deltaBadges) deltaBadges = `<span class="count-badge delta-same">No changes</span>`;
 
-    // Build counts rows
     function countsHTML(counts) {
-      const cats = ["plaques", "flowers", "candles", "pictures", "other"];
-      return cats
+      return ["plaques", "flowers", "candles", "pictures", "other"]
         .filter((k) => (counts[k] || 0) > 0)
         .map((k) => `<span class="cat-count">${counts[k]} ${k}</span>`)
         .join("") || `<span class="cat-count">0 items</span>`;
     }
 
-    const imgA = pair.crop_a_url ? `<img src="${SERVER}${pair.crop_a_url}" alt="${pair.date_a}">` : "";
-    const imgB = pair.crop_b_url ? `<img src="${SERVER}${pair.crop_b_url}" alt="${pair.date_b}">` : "";
+    const imgA = pair.image_a_url
+      ? `<img src="${SERVER}${pair.image_a_url}" alt="${pair.date_a}">`
+      : "";
+    const imgB = pair.image_b_url
+      ? `<img src="${SERVER}${pair.image_b_url}" alt="${pair.date_b}">`
+      : "";
 
     card.innerHTML = `
       <div class="pair-header">
@@ -664,36 +574,33 @@ document.getElementById("btn-to-step2").addEventListener("click", () => goToStep
 document.getElementById("btn-back-to-1").addEventListener("click", () => goToStep(1));
 document.getElementById("btn-to-step3").addEventListener("click", async () => {
   goToStep(3);
-  await loadMaskImage();
-  updateMaskStatus();
-});
-document.getElementById("btn-back-to-2").addEventListener("click", () => goToStep(2));
-document.getElementById("btn-to-step4").addEventListener("click", async () => {
-  goToStep(4);
   await runAnalysis();
   renderResults();
 });
-document.getElementById("btn-back-to-3").addEventListener("click", () => goToStep(3));
+document.getElementById("btn-back-to-2").addEventListener("click", () => {
+  _analysisCancelled = true;
+  if (_analysisController) _analysisController.abort();
+  goToStep(2);
+});
 
 // ── Init ──
 async function init() {
   initStep1();
   goToStep(1);
   try {
-    // Check Ollama status
     const healthResp = await fetch(`${SERVER}/health`);
     const healthData = await healthResp.json();
 
     if (healthData.ollama !== "connected") {
       document.getElementById("server-dot").className = "dot dot-warn";
-      document.getElementById("server-text").textContent = "Vision model not running";
-      document.getElementById("ollama-warning").classList.remove("hidden");
+      document.getElementById("server-text").textContent = "Analysis engine not running";
+      document.getElementById("engine-warning").classList.remove("hidden");
     } else if (!healthData.model) {
       document.getElementById("server-dot").className = "dot dot-warn";
-      document.getElementById("server-text").textContent = "Vision model not installed";
-      document.getElementById("ollama-warning").classList.remove("hidden");
-      document.getElementById("ollama-warning").textContent =
-        "Model not installed. Run: ollama pull gemma3:4b";
+      document.getElementById("server-text").textContent = "Analysis model not installed";
+      document.getElementById("engine-warning").classList.remove("hidden");
+      document.getElementById("engine-warning").textContent =
+        "The analysis model is not installed. See the README for setup instructions.";
     } else {
       document.getElementById("server-dot").className = "dot dot-ok";
       document.getElementById("server-text").textContent = "Server ready";
@@ -702,7 +609,8 @@ async function init() {
     await searchPanoramas();
     if (panoramas.length === 0) {
       hideLoading();
-      document.getElementById("pano-found-msg").textContent = "No historical images found. Try a different Street View location.";
+      document.getElementById("pano-found-msg").textContent =
+        "No historical images found. Try a different Street View location.";
       document.getElementById("pano-found-msg").style.color = "#ff4757";
       return;
     }
@@ -715,7 +623,7 @@ async function init() {
     hideLoading();
     document.getElementById("server-dot").className = "dot dot-err";
     document.getElementById("server-text").textContent = "Server offline";
-    document.getElementById("pano-found-msg").textContent = `Error: ${err.message}`;
+    document.getElementById("pano-found-msg").textContent = `Cannot connect to server. Make sure it is running.`;
     document.getElementById("pano-found-msg").style.color = "#ff4757";
   }
 }

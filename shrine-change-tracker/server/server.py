@@ -2,17 +2,8 @@
 Shrine Change Tracker - Local Python Server
 
 Flask server that handles panorama searching, image fetching,
-auto-alignment, polygon-mask-based comparison, and AI-powered
-object counting for the Shrine Change Tracker Chrome extension.
-
-Detection approach (Gemma 3 Vision via Ollama):
-  1. Each wall image is sent to a local Gemma 3 Vision model running
-     in Ollama for semantic understanding and object counting.
-  2. The model counts objects by category: plaques, flowers, candles,
-     pictures, and other devotional items.
-  3. Changes between consecutive years are computed from count deltas.
-  4. No training data needed — the model understands natural language
-     descriptions of what to look for.
+auto-alignment, and image analysis via a local vision model (Gemma 3)
+running in Ollama.
 """
 
 import base64
@@ -38,7 +29,6 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 ALIGN_CACHE_PATH = CACHE_DIR / "align_cache.json"
 
-# Store generated images keyed by unique ID
 _image_store = {}
 
 THUMBNAIL_BASE = (
@@ -124,16 +114,6 @@ def _polygon_pct_to_mask(polygon_pct, w, h):
     return mask
 
 
-def _polygon_bbox(polygon_pct, w, h):
-    xs = [int(p["x"] * w) for p in polygon_pct]
-    ys = [int(p["y"] * h) for p in polygon_pct]
-    x1 = max(0, min(xs))
-    y1 = max(0, min(ys))
-    x2 = min(w, max(xs))
-    y2 = min(h, max(ys))
-    return x1, y1, x2 - x1, y2 - y1
-
-
 def _compute_ssim(img_a, img_b):
     gray_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY)
     gray_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)
@@ -141,15 +121,6 @@ def _compute_ssim(img_a, img_b):
         gray_b = cv2.resize(gray_b, (gray_a.shape[1], gray_a.shape[0]))
     score, _ = ssim(gray_a, gray_b, full=True)
     return float(score)
-
-
-def _crop_to_mask_bbox(img, polygon_pct, w, h, pad=20):
-    bx, by, bw, bh = _polygon_bbox(polygon_pct, w, h)
-    x1 = max(0, bx - pad)
-    y1 = max(0, by - pad)
-    x2 = min(w, bx + bw + pad)
-    y2 = min(h, by + bh + pad)
-    return img[y1:y2, x1:x2]
 
 
 def _store_image(img_bytes):
@@ -162,7 +133,7 @@ def _demo_key(lat, lon):
     return f"{lat:.3f}_{lon:.3f}"
 
 
-# ───────── Object Counting (Ollama Vision Language Model) ─────────
+# ───────── Vision Model ─────────
 
 OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "gemma3:4b"
@@ -184,27 +155,39 @@ _COUNT_CATEGORIES = ["plaques", "flowers", "candles", "pictures", "other"]
 
 
 def _analyze_image_vlm(img):
-    """Send image to Ollama Gemma 3 Vision for semantic object counting."""
+    """Send image to local vision model for object counting."""
     _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
     b64_img = base64.b64encode(buf).decode("utf-8")
 
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={
-            "model": OLLAMA_MODEL,
-            "messages": [
-                {"role": "user", "content": _VLM_PROMPT, "images": [b64_img]}
-            ],
-            "stream": False,
-            "format": "json",
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [
+                    {"role": "user", "content": _VLM_PROMPT, "images": [b64_img]}
+                ],
+                "stream": False,
+                "format": "json",
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.ConnectionError:
+        raise ValueError(
+            "Cannot connect to the image analysis engine. "
+            "Make sure Ollama is running."
+        )
+    except requests.exceptions.Timeout:
+        raise ValueError("Image analysis timed out. The model may still be loading.")
 
     data = resp.json()
     text = data["message"]["content"]
-    counts = json.loads(text)
+
+    try:
+        counts = json.loads(text)
+    except json.JSONDecodeError:
+        raise ValueError("Model returned an unexpected response.")
 
     for key in _COUNT_CATEGORIES:
         counts[key] = int(counts.get(key, 0))
@@ -243,7 +226,10 @@ def search_panoramas_endpoint():
         panos = streetview.search_panoramas(lat, lon)
         dated = [p for p in panos if p.date is not None]
         dated.sort(key=lambda p: p.date)
-        results = [{"pano_id": p.pano_id, "date": p.date, "lat": p.lat, "lon": p.lon} for p in dated]
+        results = [
+            {"pano_id": p.pano_id, "date": p.date, "lat": p.lat, "lon": p.lon}
+            for p in dated
+        ]
         return jsonify({"panoramas": results})
     except Exception as e:
         key = _demo_key(lat, lon)
@@ -282,18 +268,16 @@ def auto_align():
     target_pano_id = data["target_pano_id"]
     base_heading = float(data["heading"])
     base_pitch = float(data["pitch"])
-    mask_polygon = data.get("mask_polygon")
 
     align_cache = _load_align_cache()
     cache_key = f"{ref_pano_id}_{target_pano_id}_{base_heading}_{base_pitch}"
-    if mask_polygon:
-        poly_hash = hashlib.md5(json.dumps(mask_polygon).encode()).hexdigest()[:8]
-        cache_key += f"_mask_{poly_hash}"
     if cache_key in align_cache:
         return jsonify(align_cache[cache_key])
 
     try:
-        ref_bytes = _fetch_thumbnail_bytes(ref_pano_id, base_heading, base_pitch, COMPARE_W, COMPARE_H)
+        ref_bytes = _fetch_thumbnail_bytes(
+            ref_pano_id, base_heading, base_pitch, COMPARE_W, COMPARE_H
+        )
         ref_img = _bytes_to_cv(ref_bytes)
         if ref_img is None:
             return jsonify({"error": "Failed to decode reference image"}), 500
@@ -301,133 +285,59 @@ def auto_align():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    ref_compare = ref_img
-    mask = None
-    if mask_polygon and len(mask_polygon) >= 3:
-        mask = _polygon_pct_to_mask(mask_polygon, COMPARE_W, COMPARE_H)
-        ref_compare = cv2.bitwise_and(ref_img, ref_img, mask=mask)
-
     best_score, best_heading, best_pitch = -1, base_heading, base_pitch
     for dh in [-5, 0, 5]:
         for dp in [-3, 0, 3]:
             try:
-                t_bytes = _fetch_thumbnail_bytes(target_pano_id, base_heading + dh, base_pitch + dp, COMPARE_W, COMPARE_H)
+                t_bytes = _fetch_thumbnail_bytes(
+                    target_pano_id, base_heading + dh, base_pitch + dp,
+                    COMPARE_W, COMPARE_H
+                )
                 t_img = _bytes_to_cv(t_bytes)
                 if t_img is None:
                     continue
                 t_img = cv2.resize(t_img, (COMPARE_W, COMPARE_H))
-                t_compare = cv2.bitwise_and(t_img, t_img, mask=mask) if mask is not None else t_img
-                score = _compute_ssim(ref_compare, t_compare)
+                score = _compute_ssim(ref_img, t_img)
                 if score > best_score:
-                    best_score, best_heading, best_pitch = score, base_heading + dh, base_pitch + dp
+                    best_score = score
+                    best_heading = base_heading + dh
+                    best_pitch = base_pitch + dp
             except Exception:
                 continue
 
-    result = {"heading": best_heading, "pitch": best_pitch, "ssim_score": round(best_score, 4)}
+    result = {
+        "heading": best_heading,
+        "pitch": best_pitch,
+        "ssim_score": round(best_score, 4),
+    }
     align_cache[cache_key] = result
     _save_align_cache(align_cache)
     return jsonify(result)
 
 
-@app.route("/compare-all", methods=["POST"])
-def compare_all():
-    """
-    Analyze each image using Gemma 3 Vision via Ollama.
-    Returns categorized object counts per image and deltas between pairs.
-    """
-    data = request.get_json(force=True)
-    panos = data["panoramas"]
-    mask_polygon = data.get("mask_polygon")
-    w, h = COMPARE_W, COMPARE_H
-
-    has_mask = mask_polygon and len(mask_polygon) >= 3
-
-    per_image = []
-    crop_ids = []
-
-    for i, p in enumerate(panos):
-        try:
-            img_bytes = _fetch_thumbnail_bytes(
-                p["pano_id"], p["heading"], p["pitch"], w, h
-            )
-            img = _bytes_to_cv(img_bytes)
-            if img is None:
-                raise ValueError("Failed to decode image")
-            img = cv2.resize(img, (w, h))
-
-            # Crop to wall area if polygon provided
-            if has_mask:
-                display_img = _crop_to_mask_bbox(img, mask_polygon, w, h)
-            else:
-                display_img = img
-
-            counts = _analyze_image_vlm(display_img)
-            counts["date"] = p["date"]
-            per_image.append(counts)
-
-            crop_id = _store_image(_cv_to_png_bytes(display_img))
-            crop_ids.append(crop_id)
-        except Exception as e:
-            per_image.append({
-                "date": p["date"], "plaques": 0, "flowers": 0,
-                "candles": 0, "pictures": 0, "other": 0, "total": 0,
-                "error": str(e),
-            })
-            crop_ids.append(None)
-
-    # Build pair comparisons
-    pairs = []
-    for i in range(len(panos) - 1):
-        ca, cb = per_image[i], per_image[i + 1]
-
-        delta = {k: cb.get(k, 0) - ca.get(k, 0) for k in _COUNT_CATEGORIES}
-
-        changes = []
-        for k in _COUNT_CATEGORIES:
-            d = delta[k]
-            if d > 0:
-                changes.append(f"+{d} {k}")
-            elif d < 0:
-                changes.append(f"{d} {k}")
-
-        summary = (
-            f"{ca['date']}: {ca.get('total', 0)} items. "
-            f"{cb['date']}: {cb.get('total', 0)} items."
-        )
-        if changes:
-            summary += f" Changes: {', '.join(changes)}."
-        else:
-            summary += " No changes detected."
-
-        pairs.append({
-            "date_a": ca["date"],
-            "date_b": cb["date"],
-            "counts_a": {k: ca.get(k, 0) for k in _COUNT_CATEGORIES + ["total"]},
-            "counts_b": {k: cb.get(k, 0) for k in _COUNT_CATEGORIES + ["total"]},
-            "delta": delta,
-            "crop_a_url": f"/image/{crop_ids[i]}" if crop_ids[i] else None,
-            "crop_b_url": f"/image/{crop_ids[i + 1]}" if crop_ids[i + 1] else None,
-            "summary": summary,
-        })
-
-    return jsonify({"per_image": per_image, "pairs": pairs})
-
-
-@app.route("/wall-crop", methods=["POST"])
-def wall_crop():
+@app.route("/analyze-image", methods=["POST"])
+def analyze_image():
+    """Analyze a single panorama image and return categorized counts."""
     data = request.get_json(force=True)
     pano_id = data["pano_id"]
     heading = float(data["heading"])
     pitch = float(data["pitch"])
 
     try:
-        img_bytes = _fetch_thumbnail_bytes(pano_id, heading, pitch, COMPARE_W, COMPARE_H)
+        img_bytes = _fetch_thumbnail_bytes(
+            pano_id, heading, pitch, COMPARE_W, COMPARE_H
+        )
         img = _bytes_to_cv(img_bytes)
         if img is None:
-            return jsonify({"error": "decode failed"}), 500
+            return jsonify({"error": "Failed to decode image"}), 500
         img = cv2.resize(img, (COMPARE_W, COMPARE_H))
+
+        counts = _analyze_image_vlm(img)
+
         img_id = _store_image(_cv_to_png_bytes(img))
-        return jsonify({"image_url": f"/image/{img_id}", "width": COMPARE_W, "height": COMPARE_H})
+        counts["image_url"] = f"/image/{img_id}"
+
+        return jsonify(counts)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
