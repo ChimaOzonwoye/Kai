@@ -6,6 +6,16 @@ A Chrome extension that tracks changes to Roman votive shrines over time using G
 
 **How it works:** The AI runs entirely on your computer via Ollama. No data is sent to the cloud. No API keys needed.
 
+## Is This Safe?
+
+**Yes.** Here's exactly what each component does and doesn't do:
+
+- **Ollama** is an open-source tool that runs AI models locally on your computer. It does NOT access the internet, does NOT send your data anywhere, does NOT read or modify your files, and does NOT run unless you start it. It can only answer questions when your server explicitly asks it one. Think of it like a calculator — it sits there doing nothing until you give it a problem.
+- **The Python server** only talks to two things: Google Street View (to download public street images) and Ollama (to analyze those images). It cannot access your documents, photos, email, or anything else on your computer.
+- **The Chrome extension** only activates when you click it on a Google Street View page. It reads the URL to get GPS coordinates. It cannot access your browsing history, passwords, or other tabs.
+
+None of these components run in the background, start automatically, or do anything you didn't explicitly ask them to do.
+
 ## What This Is
 
 Religious shrines throughout Rome accumulate votive plaques, flowers, candles, and other devotional items over time. Tracking these changes tells researchers how personal religious devotion grows, declines, or shifts at specific locations across years.
@@ -56,11 +66,12 @@ Ollama is a free tool that runs AI models locally on your computer.
 3. Drag Ollama to your Applications folder
 4. Open Ollama from Applications — it shows in your menu bar
 
-#### Linux
+#### Linux / WSL
 
 Open a terminal and run:
 
 ```bash
+sudo apt-get install zstd
 curl -fsSL https://ollama.ai/install.sh | sh
 ```
 
