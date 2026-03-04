@@ -28,6 +28,8 @@ let currentStep = 1;
 let adjustingPanoIdx = null;
 let adjustTempHeading = 0;
 let adjustTempPitch = 0;
+let _analysisController = null;
+let _analysisCancelled = false;
 
 const loading = document.getElementById("loading");
 const loadingText = document.getElementById("loading-text");
@@ -43,13 +45,17 @@ function getAngles(panoId) {
   return panoAngles[panoId] || { heading: HEADING, pitch: PITCH };
 }
 
-function showLoading(msg) {
+function showLoading(msg, cancelable = false) {
   loadingText.textContent = msg;
+  const cancelBtn = document.getElementById("cancel-analysis-btn");
+  if (cancelBtn) cancelBtn.classList.toggle("hidden", !cancelable);
   loading.classList.remove("hidden");
 }
 
 function hideLoading() {
   loading.classList.add("hidden");
+  const cancelBtn = document.getElementById("cancel-analysis-btn");
+  if (cancelBtn) cancelBtn.classList.add("hidden");
 }
 
 // ── Wizard Navigation ──
@@ -417,7 +423,9 @@ async function runAnalysis() {
   await autoAlignAll();
 
   const n = panoramas.length;
-  showLoading(`Analyzing ${n} images with AI... (~${n * 4} seconds)`);
+  showLoading(`Analyzing ${n} images... (~${n * 4} seconds)`, true);
+  _analysisCancelled = false;
+  _analysisController = new AbortController();
 
   const panoList = panoramas.map((p) => {
     const a = getAngles(p.pano_id);
@@ -432,17 +440,30 @@ async function runAnalysis() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: _analysisController.signal,
     });
 
     const data = await resp.json();
     pairResults = data.pairs || [];
     perImageData = data.per_image || [];
   } catch (err) {
-    console.error("Analysis failed:", err);
-    document.getElementById("results-summary").textContent =
-      "Analysis failed. Make sure Ollama is running with gemma3:4b model.";
-    document.getElementById("results-summary").style.color = "#ff4757";
+    if (_analysisCancelled) {
+      document.getElementById("results-summary").textContent = "Analysis cancelled.";
+      document.getElementById("results-summary").style.color = "#888";
+    } else {
+      console.error("Analysis failed:", err);
+      document.getElementById("results-summary").textContent =
+        "Analysis failed. Please check that the server is running and try again.";
+      document.getElementById("results-summary").style.color = "#ff4757";
+    }
   }
+  _analysisController = null;
+  hideLoading();
+}
+
+function cancelAnalysis() {
+  _analysisCancelled = true;
+  if (_analysisController) _analysisController.abort();
   hideLoading();
 }
 
@@ -665,17 +686,17 @@ async function init() {
 
     if (healthData.ollama !== "connected") {
       document.getElementById("server-dot").className = "dot dot-warn";
-      document.getElementById("server-text").textContent = "Ollama not running";
+      document.getElementById("server-text").textContent = "Vision model not running";
       document.getElementById("ollama-warning").classList.remove("hidden");
     } else if (!healthData.model) {
       document.getElementById("server-dot").className = "dot dot-warn";
-      document.getElementById("server-text").textContent = "AI model not found";
+      document.getElementById("server-text").textContent = "Vision model not installed";
       document.getElementById("ollama-warning").classList.remove("hidden");
       document.getElementById("ollama-warning").textContent =
         "Model not installed. Run: ollama pull gemma3:4b";
     } else {
       document.getElementById("server-dot").className = "dot dot-ok";
-      document.getElementById("server-text").textContent = "Server + AI ready";
+      document.getElementById("server-text").textContent = "Server ready";
     }
 
     await searchPanoramas();
