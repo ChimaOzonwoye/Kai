@@ -239,7 +239,7 @@ You should see:
 #### 5. Follow the wizard
 
 - **Step 1 — Location:** Confirms your coordinates and checks that the server and vision model are running. Click "Continue to Timeline."
-- **Step 2 — Timeline:** Shows every historical image as a thumbnail strip. Click any image to set it as the reference (pick the clearest, most direct view of the shrine wall). Hover over any thumbnail and click the gear icon to fine-tune the camera angle if needed. Click "Analyze Changes."
+- **Step 2 — Timeline:** Shows every historical image as a thumbnail strip. Click any image to set it as the reference (pick the clearest, most direct view of the shrine wall). Hover over any thumbnail and click the gear icon to fine-tune the camera angle if needed. Below the thumbnails, you can optionally **draw a focus region** — a rectangle around the shrine wall area. This tells the model to only count items inside that area, reducing false positives from surrounding street clutter. If the shrine fills most of the image, skip this. Click "Analyze Changes."
 - **Step 3 — Results:** The model analyzes each image one at a time. A progress bar shows how far along the analysis is, and you can cancel at any time. When complete, you see:
   - A **bar chart** showing total items detected at each point in time
   - **Side-by-side comparisons** between consecutive years with categorized counts (plaques, flowers, candles, pictures, other)
