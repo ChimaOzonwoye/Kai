@@ -136,6 +136,23 @@ body {
 .ref-thumb { width: 80px; height: 40px; object-fit: cover; border-radius: 4px; background: #111; }
 .ref-date { font-size: 14px; font-weight: 600; color: #fff; }
 
+/* Crop Region Selector */
+.crop-section { margin-top: 24px; }
+.crop-label { font-size: 14px; font-weight: 600; color: #ccc; margin-bottom: 4px; }
+.crop-optional { font-weight: 400; color: #666; font-size: 13px; }
+.crop-desc { font-size: 13px; color: #888; margin-bottom: 12px; line-height: 1.4; }
+.crop-container {
+  position: relative; background: #111; border-radius: 8px;
+  overflow: hidden; cursor: crosshair; user-select: none;
+}
+.crop-img { width: 100%; height: auto; display: block; pointer-events: none; }
+.crop-canvas {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+}
+.crop-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.crop-status { font-size: 13px; color: #888; }
+.btn-sm { padding: 6px 14px; font-size: 12px; }
+
 /* Step 3: Analysis Progress */
 .analysis-progress { text-align: center; }
 .progress-bar-track {

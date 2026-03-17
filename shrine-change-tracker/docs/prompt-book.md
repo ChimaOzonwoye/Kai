@@ -9,6 +9,72 @@ This document records the prompt engineering behind the Shrine Change Tracker's 
 This is the prompt currently used in `server.py`:
 
 ```
+This is a Google Street View image of a Roman madonnella — a devotional
+shrine mounted on a building wall in Italy. The shrine area is typically a
+section of wall with a central religious image (often the Virgin Mary)
+surrounded by votive offerings left by worshippers.
+
+COUNT only objects that are physically attached to, mounted on, or placed
+directly against the shrine wall surface. Look for:
+
+Categories:
+- plaques: marble tablets, stone slabs, ceramic tiles, engraved memorial
+  inscriptions, ex-voto tablets, any flat rectangular items mounted flush
+  against the wall. These are often white or light-colored and arranged in
+  rows or clusters around the central shrine image.
+- flowers: flower bouquets, floral arrangements, potted plants, wreaths
+  placed at the base of or attached to the shrine.
+- candles: candles, votive lights, oil lamps, electric candle substitutes
+  placed as offerings at or near the shrine.
+- pictures: framed photographs, printed religious images, painted icons,
+  holy cards, laminated images attached to the wall.
+- other: rosaries, ribbons, letters, stuffed animals, or any other
+  devotional object on the shrine wall that does not fit the above.
+
+DO NOT COUNT any of the following:
+- Cars, motorcycles, bicycles, or any vehicles
+- Pedestrians or people
+- Street signs, traffic lights, or road markings
+- Shop signs, advertisements, or business signage
+- Windows, doors, or architectural features of surrounding buildings
+- Graffiti or paint on the wall (only count mounted/attached objects)
+- Objects on the ground, sidewalk, or street that are not part of the shrine
+- Trees, utility poles, wires, or street furniture
+
+If the shrine wall is not clearly visible or the image is too unclear to
+count reliably, return all zeros.
+
+Return ONLY a JSON object with integer counts:
+{"plaques": 0, "flowers": 0, "candles": 0, "pictures": 0, "other": 0, "total": 0}
+```
+
+### Technical Parameters
+
+- **Temperature:** `0.1` (low, for deterministic/consistent counting)
+- **Format:** `json` (Ollama enforces structured JSON output)
+- **Image encoding:** JPEG at 85% quality, base64-encoded
+- **Image resolution:** 1600x800 pixels (or cropped sub-region if focus area is set)
+
+### Why This Prompt Works
+
+1. **Domain-specific context** — Uses the term "madonnella" and describes what a Roman votive shrine looks like. This activates the model's knowledge about Italian religious culture rather than treating it as a generic object counting task.
+
+2. **Physical descriptions for each category** — Instead of just "plaques," the prompt describes "marble tablets, stone slabs, ceramic tiles, engraved memorial inscriptions, ex-voto tablets, any flat rectangular items mounted flush against the wall." This gives the model concrete visual features to look for.
+
+3. **Explicit negative constraints** — A full list of what NOT to count (vehicles, people, signs, street furniture, etc.) prevents the most common false positives from urban Street View imagery.
+
+4. **Graceful fallback** — "If the shrine wall is not clearly visible or the image is too unclear to count reliably, return all zeros." This prevents the model from hallucinating counts for images where the shrine is obscured.
+
+5. **Low temperature** — Setting temperature to 0.1 reduces sampling randomness, making results more consistent across multiple runs of the same image.
+
+6. **JSON schema enforcement** — Ollama's `format: "json"` parameter combined with the explicit example output forces structured, parseable responses.
+
+---
+
+## Prompt Evolution
+
+### Version 1 (Original)
+```
 Look at this image of a wall from a Roman votive shrine in Italy.
 Count every distinct object you can see mounted on or placed against the wall.
 
@@ -23,149 +89,114 @@ Return ONLY a JSON object with integer counts:
 {"plaques": 0, "flowers": 0, "candles": 0, "pictures": 0, "other": 0, "total": 0}
 ```
 
-### Why This Structure
+**Problems:**
+- No negative constraints → counted cars, signs, and street objects
+- No domain-specific language → model treated it as generic object detection
+- Default temperature → inconsistent results between runs
+- No fallback for unclear images → hallucinated counts for obstructed views
 
-1. **Context setting** ("image of a wall from a Roman votive shrine in Italy") — tells the model what it's looking at so it can apply domain-relevant reasoning
-2. **Specific task** ("Count every distinct object") — clear, measurable instruction
-3. **Category definitions with examples** — reduces ambiguity about what belongs in each category
-4. **Output format enforcement** — specifying JSON structure with example output, combined with Ollama's `format: "json"` parameter
-
----
-
-## Known Weaknesses of the Current Prompt
-
-### 1. No Negative Constraints
-The prompt tells the model what to count but not what to ignore. In urban Street View images, the model may count:
-- Shop signs that resemble plaques
-- Flower pots on nearby balconies
-- Street lights mistaken for candles
-- Advertising posters mistaken for pictures
-
-### 2. No Spatial Anchoring
-The prompt says "mounted on or placed against the wall" but does not define which wall. If the image shows multiple buildings, the model may count items on adjacent structures.
-
-### 3. No Few-Shot Examples
-The model has no calibration for what "correct" looks like. Without examples of images paired with their correct counts, the model relies entirely on its pre-training to interpret the scene.
-
-### 4. No Handling of Ambiguity
-When items are partially occluded, clustered together, or deteriorated, the prompt gives no guidance on how to count them. Should a crumbled plaque still count? Should a cluster of 5 overlapping plaques count as 1 or 5?
+### Version 2 (Current)
+Added negative constraints, madonnella terminology, physical descriptions, temperature control, and unclear-image fallback. See "Current Production Prompt" above.
 
 ---
 
-## Improvement Strategies
+## Image Pre-Processing: Focus Region
 
-The following strategies were identified through consultation with other LLMs and prompt engineering research. They are documented here for future implementation.
+The tool now supports an optional **focus region** — a rectangle the user can draw around the shrine wall area in Step 2 (Timeline). When set:
 
-### Strategy 1: Negative Constraints
+1. The full Street View image is fetched at 1600x800
+2. The image is cropped to the selected rectangle
+3. Only the cropped region is sent to the vision model
+4. The full image is still stored for display in results
 
-Add explicit instructions about what to ignore:
+**When to use it:** When the shrine is a small part of the overall Street View image, or when there's significant urban clutter (parked cars, large trees, shop fronts) that might confuse the model.
 
-```
-IGNORE the following — do NOT count these:
-- Objects not physically on the shrine wall surface (cars, pedestrians, street signs, shop fronts)
-- Background buildings and their features
-- Street furniture (traffic lights, lamp posts, railings)
-- Text or graffiti painted directly on the wall (only count mounted/attached objects)
-```
+**When to skip it:** When the shrine wall fills most of the image and there's minimal surrounding noise.
 
-**Rationale:** Defining boundaries reduces false positives from urban clutter. The model is more accurate when it knows what to exclude.
+This is the implementation of Strategy 3 from the original improvement list (see below), designed as an optional user action rather than a required step.
 
-### Strategy 2: Few-Shot Pattern Anchoring
+---
 
-Provide 2-3 examples of images with their correct JSON analyses before the actual query. This forces the model to calibrate its counting logic against known-correct examples.
+## Strategies Implemented
 
-```
-Here are examples of correct analyses:
+### Strategy 1: Negative Constraints — IMPLEMENTED
 
-[Example image 1]
-{"plaques": 12, "flowers": 3, "candles": 0, "pictures": 2, "other": 1, "total": 18}
+The prompt now includes an explicit "DO NOT COUNT" section listing vehicles, pedestrians, street signs, shop signage, architectural features, graffiti, ground-level objects, and street furniture.
 
-[Example image 2]
-{"plaques": 0, "flowers": 0, "candles": 0, "pictures": 0, "other": 0, "total": 0}
+### Strategy 2: Few-Shot Pattern Anchoring — NOT YET IMPLEMENTED
 
-Now analyze this image:
-[Target image]
-```
+Providing 2-3 example images with correct counts would be the most impactful improvement. This requires:
+1. Manually counting items in several Largo Preneste images to establish ground truth
+2. Storing those images and counts as reference data
+3. Sending them as part of the prompt (multi-image context)
 
-**Rationale:** Few-shot examples are the most effective way to calibrate model behavior without fine-tuning. The model learns from the pattern of input→output rather than from verbal instructions alone.
-
-**Implementation note:** This requires storing reference images and their verified counts. The first few-shot examples should come from manually verified analyses of the Largo Preneste shrine.
-
-### Strategy 3: Image Pre-Processing (Wall Cropping)
-
-Crop the image to the shrine wall region before sending it to the model. This removes urban noise entirely by ensuring the model only sees the wall and its items.
-
-The extension already captures the viewing angle coordinates. A future improvement could:
-1. Allow the user to draw a region around the wall once (on the reference image)
-2. Apply that crop region to all historical images (adjusted for alignment)
-3. Send only the cropped region to the vision model
-
-**Rationale:** This was the original purpose of the "Mark the Wall" step that was removed. It was removed because it added friction and the VLM works without it. However, as an optional pre-processing step (not a required manual action), it could significantly improve accuracy by eliminating the urban noise problem entirely.
-
-### Strategy 4: JSON Schema Enforcement
-
-The current prompt uses Ollama's `format: "json"` parameter, which forces JSON output. This can be strengthened by providing a stricter schema:
+**Implementation note:** Ollama's chat API supports multiple images per message. Few-shot examples would be sent as prior messages in the conversation:
 
 ```json
 {
-  "plaques": {
-    "count": 0,
-    "confidence": "high|medium|low",
-    "notes": "description of what was counted"
-  },
-  ...
+  "messages": [
+    {"role": "user", "content": "Analyze this shrine image:", "images": ["<reference_img_1>"]},
+    {"role": "assistant", "content": "{\"plaques\": 12, \"flowers\": 3, ...}"},
+    {"role": "user", "content": "Now analyze this image:", "images": ["<target_img>"]}
+  ]
 }
 ```
 
-**Rationale:** Forcing the model to explain what it counted and rate its confidence provides an audit trail. However, this adds complexity and processing time. For the current use case, simple integer counts are sufficient.
+### Strategy 3: Image Pre-Processing (Wall Cropping) — IMPLEMENTED
 
-### Strategy 5: Temperature and Sampling Control
+Users can optionally draw a focus rectangle in Step 2. The server crops the image before sending to the model. See "Image Pre-Processing: Focus Region" above.
 
-Most vision models accept a `temperature` parameter:
-- **Lower temperature (0.1-0.3):** More deterministic, less creative → more consistent counts between runs
-- **Higher temperature (0.7-1.0):** More variable, explores alternatives → less consistent
+### Strategy 4: JSON Schema Enforcement — PARTIALLY IMPLEMENTED
 
-The current implementation uses the model's default temperature. Setting a low temperature through Ollama's API could reduce run-to-run variance:
+Ollama's `format: "json"` is used. A richer schema (with confidence scores and notes) is deferred — simple integer counts are sufficient for the current research phase.
 
-```json
-{
-  "model": "gemma3:4b",
-  "options": {
-    "temperature": 0.1
-  }
-}
-```
+### Strategy 5: Temperature Control — IMPLEMENTED
 
-**Rationale:** For a counting task, we want deterministic behavior, not creativity. Lower temperature should produce more consistent results.
+Temperature is set to `0.1` via Ollama's `options.temperature` parameter. This should reduce but not eliminate run-to-run variance.
 
 ---
 
 ## Prompt Design Principles (Model-Agnostic)
 
-These principles should apply regardless of which model is used:
+These principles apply regardless of which model is used:
 
-1. **Be specific about the domain.** Tell the model it's looking at a Roman votive shrine, not a generic wall. Domain context activates relevant learned patterns.
+1. **Be specific about the domain.** "Roman madonnella" activates more relevant knowledge than "wall with objects." Use the actual terminology of the field.
 
-2. **Define categories with physical descriptions.** "Marble or stone tablets, ceramic tiles" is better than just "plaques." The model needs to know what the physical object looks like.
+2. **Define categories with physical descriptions.** The model needs to know what the objects look like, not just their names. "Marble tablets, stone slabs, ceramic tiles" is better than just "plaques."
 
 3. **Constrain the output format.** Always enforce JSON. Always specify the exact keys expected. Parse and validate server-side.
 
-4. **Tell the model what to ignore.** Negative constraints are as important as positive instructions, especially in noisy environments.
+4. **Tell the model what NOT to count.** Negative constraints are as important as positive instructions, especially in noisy Street View imagery.
 
-5. **Calibrate with examples when possible.** Few-shot examples beat verbose instructions for teaching a model what "correct" looks like.
+5. **Provide a fallback for ambiguity.** "If unclear, return zeros" is better than forcing the model to guess, which leads to hallucinated counts.
 
-6. **Keep the prompt focused.** Don't ask the model to be an expert, describe its role, or explain its reasoning. Just ask it to count and return JSON.
+6. **Keep temperature low for counting tasks.** Creative sampling is the enemy of consistent measurement.
 
-7. **Structure should do the heavy lifting.** The extension controls the camera angle, alignment, and image quality. The server controls image resolution and encoding. The prompt should focus only on the counting task — let the surrounding infrastructure handle everything else.
+7. **Let structure do the heavy lifting.** The extension controls camera angle and alignment. The server controls image resolution. The optional crop region removes noise. The prompt should focus only on the counting task — everything else is handled by the surrounding infrastructure.
+
+8. **The prompt should not depend on the model.** Write prompts that describe what you want, not how a specific model should process it. If you switch from Gemma 3 to LLaVA to a future model, the prompt should still work.
+
+---
+
+## Switching Models
+
+To use a different vision model:
+
+1. Pull it: `ollama pull <model-name>` (e.g., `gemma3:12b`, `llava:13b`)
+2. Edit `server.py` line: `OLLAMA_MODEL = "<model-name>"`
+3. Restart the server
+
+The prompt, temperature, JSON enforcement, and crop region all work the same way regardless of model. Results will vary based on the model's capabilities — a larger model may be more accurate but slower.
 
 ---
 
 ## Future Work
 
-- [ ] Implement temperature control (low temperature for consistency)
-- [ ] Add negative constraints to the production prompt
+- [x] ~~Implement temperature control (low temperature for consistency)~~
+- [x] ~~Add negative constraints to the production prompt~~
+- [x] ~~Implement image cropping as optional pre-processing step~~
 - [ ] Create few-shot examples from manually verified Largo Preneste counts
-- [ ] Test image cropping as optional pre-processing step
 - [ ] Benchmark consistency: run same location 5 times, measure count variance
 - [ ] Test with larger models (gemma3:12b, llava, etc.) and compare accuracy
 - [ ] Document which model versions produce which results for reproducibility
+- [ ] Test whether few-shot examples improve consistency more than temperature alone

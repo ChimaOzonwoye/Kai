@@ -19,6 +19,11 @@ let pairResults = [];
 let _analysisController = null;
 let _analysisCancelled = false;
 
+// Crop region (optional shrine wall focus)
+let cropRegion = null; // {x, y, w, h} as 0.0-1.0 percentages, or null
+let _cropDrawing = false;
+let _cropStart = null;
+
 // Adjust modal
 let adjustingPanoIdx = null;
 let adjustTempHeading = 0;
@@ -137,6 +142,104 @@ function updateRefPicker() {
     pano.pano_id, angles.heading, angles.pitch
   );
   document.getElementById("ref-date").textContent = pano.date;
+  initCropSection(pano.pano_id, angles.heading, angles.pitch);
+}
+
+// ── Crop Region ──
+function initCropSection(panoId, heading, pitch) {
+  const section = document.getElementById("crop-section");
+  section.classList.remove("hidden");
+  const img = document.getElementById("crop-img");
+  img.src = thumbnailUrl(panoId, heading, pitch, 800, 400);
+  cropRegion = null;
+  updateCropStatus();
+
+  img.onload = () => {
+    const canvas = document.getElementById("crop-canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    drawCropOverlay();
+  };
+}
+
+function getCropCanvasCoords(e) {
+  const canvas = document.getElementById("crop-canvas");
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) / rect.width,
+    y: (e.clientY - rect.top) / rect.height,
+  };
+}
+
+document.getElementById("crop-canvas").addEventListener("mousedown", (e) => {
+  _cropDrawing = true;
+  _cropStart = getCropCanvasCoords(e);
+  cropRegion = null;
+});
+
+document.getElementById("crop-canvas").addEventListener("mousemove", (e) => {
+  if (!_cropDrawing || !_cropStart) return;
+  const pos = getCropCanvasCoords(e);
+  cropRegion = {
+    x: Math.min(_cropStart.x, pos.x),
+    y: Math.min(_cropStart.y, pos.y),
+    w: Math.abs(pos.x - _cropStart.x),
+    h: Math.abs(pos.y - _cropStart.y),
+  };
+  drawCropOverlay();
+});
+
+document.getElementById("crop-canvas").addEventListener("mouseup", () => {
+  _cropDrawing = false;
+  _cropStart = null;
+  if (cropRegion && cropRegion.w < 0.02 && cropRegion.h < 0.02) {
+    cropRegion = null; // Too small, treat as a click (clear)
+  }
+  drawCropOverlay();
+  updateCropStatus();
+});
+
+document.getElementById("crop-clear").addEventListener("click", () => {
+  cropRegion = null;
+  drawCropOverlay();
+  updateCropStatus();
+});
+
+function drawCropOverlay() {
+  const canvas = document.getElementById("crop-canvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!cropRegion) return;
+
+  // Dim everything outside the crop region
+  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.fillRect(0, 0, w, h);
+
+  // Clear the crop region (show original image)
+  const rx = cropRegion.x * w;
+  const ry = cropRegion.y * h;
+  const rw = cropRegion.w * w;
+  const rh = cropRegion.h * h;
+  ctx.clearRect(rx, ry, rw, rh);
+
+  // Draw crop border
+  ctx.strokeStyle = "#4a69bd";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(rx, ry, rw, rh);
+}
+
+function updateCropStatus() {
+  const status = document.getElementById("crop-status");
+  if (cropRegion && cropRegion.w > 0.02 && cropRegion.h > 0.02) {
+    status.textContent = "Focus region selected — model will analyze this area only";
+    status.style.color = "#2ed573";
+  } else {
+    status.textContent = "No region selected — full image will be used";
+    status.style.color = "#888";
+  }
 }
 
 // ── Adjust Modal ──
@@ -276,14 +379,19 @@ async function runAnalysis() {
     const angles = getAngles(p.pano_id);
 
     try {
+      const payload = {
+        pano_id: p.pano_id,
+        heading: angles.heading,
+        pitch: angles.pitch,
+      };
+      // If user drew a focus region, send it so the server crops before analysis
+      if (cropRegion && cropRegion.w > 0.02 && cropRegion.h > 0.02) {
+        payload.crop = cropRegion;
+      }
       const resp = await fetch(`${SERVER}/analyze-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pano_id: p.pano_id,
-          heading: angles.heading,
-          pitch: angles.pitch,
-        }),
+        body: JSON.stringify(payload),
         signal: _analysisController.signal,
       });
 
