@@ -114,6 +114,22 @@ def _polygon_pct_to_mask(polygon_pct, w, h):
     return mask
 
 
+def _crop_to_region(img, crop_pct):
+    """Crop image to a rectangular region defined by percentage coordinates.
+
+    crop_pct: {"x": float, "y": float, "w": float, "h": float}
+    where all values are 0.0 to 1.0 representing percentages of image dimensions.
+    """
+    h, w = img.shape[:2]
+    x1 = max(0, int(crop_pct["x"] * w))
+    y1 = max(0, int(crop_pct["y"] * h))
+    x2 = min(w, int((crop_pct["x"] + crop_pct["w"]) * w))
+    y2 = min(h, int((crop_pct["y"] + crop_pct["h"]) * h))
+    if x2 <= x1 or y2 <= y1:
+        return img
+    return img[y1:y2, x1:x2]
+
+
 def _compute_ssim(img_a, img_b):
     gray_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY)
     gray_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)
@@ -137,16 +153,40 @@ def _demo_key(lat, lon):
 
 OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "gemma3:4b"
+OLLAMA_TEMPERATURE = 0.1  # Low temperature for consistent, deterministic counting
 
 _VLM_PROMPT = (
-    "Look at this image of a wall from a Roman votive shrine in Italy. "
-    "Count every distinct object you can see mounted on or placed against the wall.\n\n"
+    "This is a Google Street View image of a devotional shrine — a wall-mounted "
+    "religious site, often called a madonnella in Rome, where worshippers leave "
+    "votive offerings. The shrine typically has a central religious image (such as "
+    "the Virgin Mary or a saint) surrounded by items left by visitors.\n\n"
+    "YOUR TASK: Count every distinct devotional object on the shrine wall. "
+    "Scan the wall systematically from left to right, top to bottom. "
+    "Count each individual item separately, even if items overlap or cluster.\n\n"
     "Categories:\n"
-    "- plaques: marble or stone tablets, ceramic tiles, memorial inscriptions, any flat mounted items\n"
-    "- flowers: flower bouquets, arrangements, potted plants\n"
-    "- candles: candles, lamps, any light sources placed as offerings\n"
-    "- pictures: framed photographs, religious images, paintings, icons, prints\n"
-    "- other: any other distinct devotional objects on the wall\n\n"
+    "- plaques: marble tablets, stone slabs, ceramic tiles, engraved memorial "
+    "inscriptions, ex-voto tablets, any flat rectangular items mounted flush "
+    "against the wall. These are often white or light-colored and arranged in "
+    "rows or clusters around the central shrine image.\n"
+    "- flowers: flower bouquets, floral arrangements, potted plants, wreaths "
+    "placed at the base of or attached to the shrine.\n"
+    "- candles: candles, votive lights, oil lamps, electric candle substitutes "
+    "placed as offerings at or near the shrine.\n"
+    "- pictures: framed photographs, printed religious images, painted icons, "
+    "holy cards, laminated images attached to the wall.\n"
+    "- other: rosaries, ribbons, letters, stuffed animals, or any other "
+    "devotional object on the shrine wall that does not fit the above.\n\n"
+    "DO NOT COUNT any of the following:\n"
+    "- Cars, motorcycles, bicycles, or any vehicles\n"
+    "- Pedestrians or people\n"
+    "- Street signs, traffic lights, or road markings\n"
+    "- Shop signs, advertisements, or business signage\n"
+    "- Windows, doors, or architectural features of buildings\n"
+    "- Graffiti or paint on the wall (only count mounted/attached objects)\n"
+    "- Objects on the ground, sidewalk, or street not part of the shrine\n"
+    "- Trees, utility poles, wires, or street furniture\n\n"
+    "If the shrine wall is not clearly visible or the image is too unclear to "
+    "count reliably, return all zeros.\n\n"
     "Return ONLY a JSON object with integer counts:\n"
     '{"plaques": 0, "flowers": 0, "candles": 0, "pictures": 0, "other": 0, "total": 0}'
 )
@@ -169,6 +209,9 @@ def _analyze_image_vlm(img):
                 ],
                 "stream": False,
                 "format": "json",
+                "options": {
+                    "temperature": OLLAMA_TEMPERATURE,
+                },
             },
             timeout=300,
         )
@@ -317,11 +360,16 @@ def auto_align():
 
 @app.route("/analyze-image", methods=["POST"])
 def analyze_image():
-    """Analyze a single panorama image and return categorized counts."""
+    """Analyze a single panorama image and return categorized counts.
+
+    Accepts optional 'crop' parameter: {"x": 0.0-1.0, "y": 0.0-1.0, "w": 0.0-1.0, "h": 0.0-1.0}
+    to focus analysis on a specific region (e.g. the shrine wall area).
+    """
     data = request.get_json(force=True)
     pano_id = data["pano_id"]
     heading = float(data["heading"])
     pitch = float(data["pitch"])
+    crop_pct = data.get("crop")  # Optional: {"x", "y", "w", "h"} as percentages
 
     try:
         img_bytes = _fetch_thumbnail_bytes(
@@ -332,9 +380,15 @@ def analyze_image():
             return jsonify({"error": "Failed to decode image"}), 500
         img = cv2.resize(img, (COMPARE_W, COMPARE_H))
 
-        counts = _analyze_image_vlm(img)
-
+        # Store the full image for display
         img_id = _store_image(_cv_to_png_bytes(img))
+
+        # If a crop region is provided, crop before sending to the model
+        analysis_img = img
+        if crop_pct and all(k in crop_pct for k in ("x", "y", "w", "h")):
+            analysis_img = _crop_to_region(img, crop_pct)
+
+        counts = _analyze_image_vlm(analysis_img)
         counts["image_url"] = f"/image/{img_id}"
 
         return jsonify(counts)

@@ -1,34 +1,43 @@
 # Shrine Change Tracker
 
-A Chrome extension that tracks changes to Roman votive shrines over time using Google Street View historical imagery and a local AI vision model.
+A Chrome extension that tracks changes to Roman votive shrines over time using Google Street View historical imagery and a local vision model.
 
-**What it does:** You navigate to a shrine in Google Street View, click the extension, and it pulls every historical image of that location (sometimes spanning 15+ years). A local AI model (Gemma 3 Vision) then analyzes each image — counting plaques, flowers, candles, and other devotional items — and shows you how the shrine has changed over time with a chart and side-by-side comparisons.
+**What it does:** You navigate to a shrine in Google Street View, click the extension, and it pulls every historical image of that location (sometimes spanning 15+ years). A local vision model then analyzes each image — counting plaques, flowers, candles, and other devotional items — and shows you how the shrine has changed over time with a chart and side-by-side comparisons.
 
-**How it works:** The AI runs entirely on your computer via Ollama. No data is sent to the cloud. No API keys needed.
-
-## Is This Safe?
-
-**Yes.** Here's exactly what each component does and doesn't do:
-
-- **Ollama** is an open-source tool that runs AI models locally on your computer. It does NOT access the internet, does NOT send your data anywhere, does NOT read or modify your files, and does NOT run unless you start it. It can only answer questions when your server explicitly asks it one. Think of it like a calculator — it sits there doing nothing until you give it a problem.
-- **The Python server** only talks to two things: Google Street View (to download public street images) and Ollama (to analyze those images). It cannot access your documents, photos, email, or anything else on your computer.
-- **The Chrome extension** only activates when you click it on a Google Street View page. It reads the URL to get GPS coordinates. It cannot access your browsing history, passwords, or other tabs.
-
-None of these components run in the background, start automatically, or do anything you didn't explicitly ask them to do.
+**How it works:** The vision model runs entirely on your computer via Ollama. No data is sent to the cloud. No API keys needed.
 
 ## What This Is
 
 Religious shrines throughout Rome accumulate votive plaques, flowers, candles, and other devotional items over time. Tracking these changes tells researchers how personal religious devotion grows, declines, or shifts at specific locations across years.
 
-Previously, this was done by hand: a researcher would open Google Street View, look at each year's image of a shrine wall, and manually count every plaque. For one site across 14 years of images, this could take days. For all 600+ mapped shrine sites in Rome, it would take months.
+Previously, this was done by hand: a researcher would open Google Street View, look at each year's image of a shrine wall, and manually count every plaque. For one site across 14 years of images, this could take an hour or more. For all 600+ mapped shrine sites in Rome, it would take months.
 
-This tool automates that process using AI vision.
+This tool automates that counting process using a local vision model.
+
+## Is This Safe?
+
+**Yes.** Here's exactly what each component does and doesn't do:
+
+- **Ollama** is an open-source tool that runs vision models locally on your computer. It does NOT access the internet, does NOT send your data anywhere, does NOT read or modify your files, and does NOT run unless you start it. It only answers questions when the server explicitly asks it one.
+- **The Python server** only talks to two things: Google Street View (to download public street images) and Ollama (to analyze those images). It cannot access your documents, photos, email, or anything else on your computer.
+- **The Chrome extension** only activates when you click it on a Google Street View page. It reads the URL to get GPS coordinates. It cannot access your browsing history, passwords, or other tabs.
+
+None of these components run in the background, start automatically, or do anything you didn't explicitly ask them to do.
 
 ## Built With
 
 - Development: [Claude Code](https://claude.ai/code) (AI-assisted development)
 - Architecture, product direction, and research: **Chima Ozonwoye**
 - Academic supervision: **Louis Hamilton, PhD**, New Jersey Institute of Technology
+
+## Documentation
+
+See the [`docs/`](docs/) folder for detailed documentation:
+
+- **[Development Journey](docs/development-journey.md)** — Full record of how this tool was built, what approaches were tried, what failed, and what worked
+- **[Limitations](docs/limitations.md)** — What the tool can and cannot do, from the builder's perspective
+- **[Prompt Book](docs/prompt-book.md)** — The prompt engineering behind the vision model analysis, designed to be model-agnostic
+- **[Manual vs Automated Analysis](docs/manual-vs-automated.md)** — Comparison of hand-counted results (Rohit's HIRF study) with automated tracker results
 
 ---
 
@@ -40,7 +49,7 @@ Follow every step in order. You will copy and paste commands into a terminal.
 
 - **Google Chrome** browser
 - **Python 3.9 or newer** (check with `python3 --version` or `python --version`)
-- **~4 GB free disk space** (for the AI model)
+- **~4 GB free disk space** (for the vision model)
 - **8 GB+ RAM** (16 GB or more recommended)
 
 If you don't have Python, download it from https://www.python.org/downloads/
@@ -50,7 +59,7 @@ If you don't have Python, download it from https://www.python.org/downloads/
 
 ### Step 1: Install Ollama
 
-Ollama is a free tool that runs AI models locally on your computer.
+Ollama is a free, open-source tool that runs vision models locally on your computer.
 
 #### Windows
 
@@ -85,7 +94,7 @@ Keep this terminal open (or run it in the background).
 
 ---
 
-### Step 2: Download the AI Model
+### Step 2: Download the Vision Model
 
 Open a **new terminal** (Command Prompt on Windows, Terminal on Mac/Linux) and run:
 
@@ -223,19 +232,18 @@ You should see:
 #### 4. Click the extension and analyze
 
 1. Click the **Shrine Change Tracker** icon in your Chrome toolbar
-2. It should show "Server + AI ready" with a green dot
+2. It should show "Server ready" with a green dot
 3. Click **"Analyze Location"**
 4. A new tab opens with the analysis wizard
 
 #### 5. Follow the wizard
 
-- **Step 1 — Location:** Confirms your coordinates. Click "Continue to Timeline."
-- **Step 2 — Timeline:** Shows every historical image as a thumbnail. Click one to set it as the reference (pick the clearest view). Click "Mark the Wall."
-- **Step 3 — Mark the Wall (Optional):** Draw a polygon around the wall for focused analysis, or click "Analyze Changes" to let the AI scan the full image.
-- **Step 4 — Results:** The AI analyzes each image (~4 seconds per image). You'll see:
-  - A **bar chart** showing total items detected over time
-  - **Side-by-side comparisons** between consecutive years with categorized counts (plaques, flowers, candles, pictures)
-  - **Change summaries** showing what was added or removed
+- **Step 1 — Location:** Confirms your coordinates and checks that the server and vision model are running. Click "Continue to Timeline."
+- **Step 2 — Timeline:** Shows every historical image as a thumbnail strip. Click any image to set it as the reference (pick the clearest, most direct view of the shrine wall). Hover over any thumbnail and click the gear icon to fine-tune the camera angle if needed. Below the thumbnails, you can optionally **draw a focus region** — a rectangle around the shrine wall area. This tells the model to only count items inside that area, reducing false positives from surrounding street clutter. If the shrine fills most of the image, skip this. Click "Analyze Changes."
+- **Step 3 — Results:** The model analyzes each image one at a time. A progress bar shows how far along the analysis is, and you can cancel at any time. When complete, you see:
+  - A **bar chart** showing total items detected at each point in time
+  - **Side-by-side comparisons** between consecutive years with categorized counts (plaques, flowers, candles, pictures, other)
+  - **Change badges** showing what was added or removed between periods
 
 ---
 
@@ -256,9 +264,10 @@ The extension includes built-in demo data for this location.
 | Problem | Solution |
 |---------|----------|
 | **"Server offline"** | Make sure `python server.py` is running in your terminal. Make sure you activated the virtual environment first. |
-| **"Ollama not running"** | Start Ollama. Windows/Mac: it should auto-start. Linux: run `ollama serve` in a terminal. |
-| **"AI model not found"** | Run `ollama pull gemma3:4b` to download the model. |
-| **Analysis is slow** | Each image takes ~3-5 seconds on CPU. 13 images = ~1 minute. If you have a GPU, Ollama uses it automatically. |
+| **"Analysis engine not running"** | Start Ollama. Windows/Mac: it should auto-start. Linux: run `ollama serve` in a terminal. |
+| **"Analysis model not installed"** | Run `ollama pull gemma3:4b` to download the model. |
+| **Analysis is slow** | Each image takes 30-60 seconds on CPU. 13 images = ~10-15 minutes. If you have a GPU, Ollama uses it automatically and is much faster. |
+| **Results vary between runs** | This is expected with vision models. See [Limitations](docs/limitations.md) for details. |
 | **pip install fails** | Make sure you're using Python 3.9+. Try `python3` instead of `python`. Make sure the virtual environment is activated. |
 | **Extension doesn't detect location** | Make sure you're on a Google Street View page (URL contains `@` coordinates). Refresh and try again. |
 | **Images look misaligned** | In Step 2, hover over any thumbnail and click the gear icon to adjust the camera angle. |
@@ -266,18 +275,55 @@ The extension includes built-in demo data for this location.
 
 ---
 
+## Testing
+
+The tool includes two test scripts:
+
+### Pipeline Tests (no Ollama required)
+
+Verifies the server pipeline works correctly using a mock model:
+
+```bash
+cd shrine-change-tracker/server
+python test_pipeline.py
+```
+
+This tests: routing, image cropping, prompt structure, JSON parsing, error handling, and image storage. All 11 tests should pass.
+
+### Consistency Tests (requires Ollama)
+
+Runs the analysis on the same image multiple times to measure how consistent the counts are:
+
+```bash
+cd shrine-change-tracker/server
+python test_consistency.py
+```
+
+This runs 4 analyses on the 2008 Largo Preneste image, then tests 3 images across time (2008, 2017, 2025) to verify trends are stable. Results are saved to `test_results.json`.
+
+A **coefficient of variation (CV) under 10%** on total counts indicates reliable trend detection. CV under 25% is acceptable for identifying directional changes (increase vs decrease).
+
+---
+
 ## Project Structure
 
 ```
 shrine-change-tracker/
-├── extension/              # Chrome extension
-│   ├── manifest.json       # Extension configuration
-│   ├── popup.html/js/css   # Popup (detects Street View location)
-│   ├── analysis.html       # Analysis wizard page
-│   ├── analysis.js         # Wizard logic and visualization
-│   ├── analysis.css        # Styling
-│   └── icon*.png           # Extension icons
+├── docs/                          # Research documentation
+│   ├── development-journey.md     # How this tool was built (what worked, what failed)
+│   ├── limitations.md             # What it can and cannot do
+│   ├── prompt-book.md             # Prompt engineering for the vision model
+│   └── manual-vs-automated.md     # Comparison with manual counting
+├── extension/                     # Chrome extension
+│   ├── manifest.json              # Extension configuration
+│   ├── popup.html/js/css          # Popup (detects Street View location)
+│   ├── analysis.html              # Analysis wizard (3-step flow)
+│   ├── analysis.js                # Wizard logic, chart, and per-image analysis
+│   ├── analysis.css               # Styling
+│   └── icon*.png                  # Extension icons
 └── server/
-    ├── server.py           # Flask backend + Ollama integration
-    └── requirements.txt    # Python dependencies
+    ├── server.py                  # Flask backend + Ollama vision model integration
+    ├── requirements.txt           # Python dependencies
+    ├── test_pipeline.py           # Pipeline integration tests (mock Ollama)
+    └── test_consistency.py        # Consistency benchmark (requires Ollama)
 ```
