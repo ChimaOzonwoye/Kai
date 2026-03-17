@@ -275,6 +275,36 @@ The extension includes built-in demo data for this location.
 
 ---
 
+## Testing
+
+The tool includes two test scripts:
+
+### Pipeline Tests (no Ollama required)
+
+Verifies the server pipeline works correctly using a mock model:
+
+```bash
+cd shrine-change-tracker/server
+python test_pipeline.py
+```
+
+This tests: routing, image cropping, prompt structure, JSON parsing, error handling, and image storage. All 11 tests should pass.
+
+### Consistency Tests (requires Ollama)
+
+Runs the analysis on the same image multiple times to measure how consistent the counts are:
+
+```bash
+cd shrine-change-tracker/server
+python test_consistency.py
+```
+
+This runs 4 analyses on the 2008 Largo Preneste image, then tests 3 images across time (2008, 2017, 2025) to verify trends are stable. Results are saved to `test_results.json`.
+
+A **coefficient of variation (CV) under 10%** on total counts indicates reliable trend detection. CV under 25% is acceptable for identifying directional changes (increase vs decrease).
+
+---
+
 ## Project Structure
 
 ```
@@ -293,5 +323,7 @@ shrine-change-tracker/
 │   └── icon*.png                  # Extension icons
 └── server/
     ├── server.py                  # Flask backend + Ollama vision model integration
-    └── requirements.txt           # Python dependencies
+    ├── requirements.txt           # Python dependencies
+    ├── test_pipeline.py           # Pipeline integration tests (mock Ollama)
+    └── test_consistency.py        # Consistency benchmark (requires Ollama)
 ```
