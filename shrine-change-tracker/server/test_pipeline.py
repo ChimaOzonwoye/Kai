@@ -27,7 +27,7 @@ import server as srv
 class MockOllamaHandler(BaseHTTPRequestHandler):
     """Mock Ollama server that returns predictable counts."""
 
-    response_counts = {"plaques": 8, "flowers": 3, "candles": 1, "pictures": 2, "other": 1, "total": 15}
+    response_counts = {"plaques": 8, "flowers": 3, "candles": 1, "pictures": 2, "other": 1, "total": 15, "visibility": "clear"}
 
     def do_GET(self):
         if "/api/tags" in self.path:
@@ -117,7 +117,7 @@ class TestServerPipeline(unittest.TestCase):
             srv.OLLAMA_URL = old_url
 
     def test_analyze_image_basic(self):
-        """Analyze endpoint returns correct counts from mock model."""
+        """Analyze endpoint returns correct multi-run consensus from mock model."""
         # Create a fake image in the cache so we don't need network
         fake_img = np.zeros((800, 1600, 3), dtype=np.uint8)
         fake_img[100:700, 200:1400] = 128  # Gray rectangle
@@ -132,21 +132,32 @@ class TestServerPipeline(unittest.TestCase):
                 "pano_id": "test-pano-123",
                 "heading": 271.0,
                 "pitch": -2.0,
+                "num_runs": 2,
             })
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
+        # Top-level counts (backward compat) should match median
         self.assertEqual(data["plaques"], 8)
         self.assertEqual(data["flowers"], 3)
-        self.assertEqual(data["candles"], 1)
-        self.assertEqual(data["pictures"], 2)
-        self.assertEqual(data["other"], 1)
         self.assertEqual(data["total"], 15)
         self.assertIn("image_url", data)
         self.assertTrue(data["image_url"].startswith("/image/"))
 
+        # New multi-run fields
+        self.assertIn("runs", data)
+        self.assertIn("median", data)
+        self.assertIn("range", data)
+        self.assertIn("confidence", data)
+        self.assertIn("agreement", data)
+        self.assertIn("visibility", data)
+
+        # With consistent mock, confidence should be high
+        self.assertEqual(data["confidence"], "high")
+        self.assertEqual(len(data["runs"]), 2)
+
     def test_analyze_image_with_crop(self):
-        """Analyze endpoint correctly crops before sending to model."""
+        """Analyze endpoint correctly crops before sending to model and returns crop image."""
         fake_img = np.zeros((800, 1600, 3), dtype=np.uint8)
         import cv2
         _, buf = cv2.imencode(".jpg", fake_img)
@@ -168,16 +179,22 @@ class TestServerPipeline(unittest.TestCase):
                     "heading": 271.0,
                     "pitch": -2.0,
                     "crop": {"x": 0.5, "y": 0.0, "w": 0.5, "h": 1.0},
+                    "num_runs": 1,
                 })
 
         self.assertEqual(r.status_code, 200)
+        data = r.get_json()
         # The cropped image should be roughly half the width
         h, w = actual_img_sent[0][:2]
         self.assertAlmostEqual(w, 800, delta=10)  # Half of 1600
         self.assertAlmostEqual(h, 800, delta=10)  # Full height
 
+        # Should have both full and crop image URLs
+        self.assertIn("image_url", data)
+        self.assertIn("crop_image_url", data)
+
     def test_analyze_image_no_crop(self):
-        """Without crop, full image is sent to model."""
+        """Without crop, full image is sent to model and no crop_image_url returned."""
         fake_img = np.zeros((800, 1600, 3), dtype=np.uint8)
         import cv2
         _, buf = cv2.imencode(".jpg", fake_img)
@@ -195,12 +212,15 @@ class TestServerPipeline(unittest.TestCase):
                     "pano_id": "test-pano-789",
                     "heading": 271.0,
                     "pitch": -2.0,
+                    "num_runs": 1,
                 })
 
         self.assertEqual(r.status_code, 200)
+        data = r.get_json()
         h, w = actual_img_sent[0][:2]
         self.assertEqual(w, 1600)
         self.assertEqual(h, 800)
+        self.assertNotIn("crop_image_url", data)
 
     def test_crop_region_function(self):
         """_crop_to_region correctly crops image by percentage."""
@@ -250,6 +270,12 @@ class TestServerPipeline(unittest.TestCase):
         self.assertIn('"plaques"', prompt)
         self.assertIn('"total"', prompt)
 
+        # Visibility self-assessment
+        self.assertIn("visibility", prompt.lower())
+        self.assertIn("clear", prompt)
+        self.assertIn("partial", prompt)
+        self.assertIn("poor", prompt)
+
     def test_temperature_setting(self):
         """Temperature is set to a low value for consistency."""
         self.assertLessEqual(srv.OLLAMA_TEMPERATURE, 0.2)
@@ -274,6 +300,7 @@ class TestServerPipeline(unittest.TestCase):
                 "pano_id": "test-parse",
                 "heading": 0,
                 "pitch": 0,
+                "num_runs": 1,
             })
 
         data = r.get_json()
@@ -298,6 +325,7 @@ class TestServerPipeline(unittest.TestCase):
                 "pano_id": "test-img-store",
                 "heading": 0,
                 "pitch": 0,
+                "num_runs": 1,
             })
 
         data = r.get_json()
@@ -308,6 +336,53 @@ class TestServerPipeline(unittest.TestCase):
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(r2.content_type, "image/png")
         self.assertGreater(len(r2.data), 100)  # Non-trivial image data
+
+    def test_multi_run_consensus(self):
+        """Multi-run analysis computes correct consensus with consistent mock."""
+        fake_img = np.zeros((100, 200, 3), dtype=np.uint8)
+
+        # Mock returns same counts each time — should give high confidence
+        result = srv._analyze_image_multi(fake_img, num_runs=3)
+
+        self.assertEqual(len(result["runs"]), 3)
+        self.assertEqual(result["median"]["plaques"], 8)
+        self.assertEqual(result["median"]["total"], 15)
+        self.assertEqual(result["confidence"], "high")
+        self.assertGreaterEqual(result["agreement"], 0.9)
+
+        # Range should be tight (all same values)
+        self.assertEqual(result["range"]["total"][0], 15)
+        self.assertEqual(result["range"]["total"][1], 15)
+
+    def test_multi_run_with_variance(self):
+        """Multi-run analysis handles varying responses correctly."""
+        fake_img = np.zeros((100, 200, 3), dtype=np.uint8)
+
+        # Simulate varying responses by patching _analyze_image_vlm
+        call_count = [0]
+        responses = [
+            {"plaques": 5, "flowers": 2, "candles": 0, "pictures": 1, "other": 0, "total": 8, "visibility": "clear"},
+            {"plaques": 15, "flowers": 2, "candles": 0, "pictures": 1, "other": 0, "total": 18, "visibility": "partial"},
+            {"plaques": 8, "flowers": 2, "candles": 0, "pictures": 1, "other": 0, "total": 11, "visibility": "clear"},
+        ]
+
+        def varying_vlm(img):
+            idx = call_count[0] % len(responses)
+            call_count[0] += 1
+            return dict(responses[idx])
+
+        with patch.object(srv, "_analyze_image_vlm", side_effect=varying_vlm):
+            result = srv._analyze_image_multi(fake_img, num_runs=3)
+
+        self.assertEqual(len(result["runs"]), 3)
+        # Median of [5, 15, 8] = 8
+        self.assertEqual(result["median"]["plaques"], 8)
+        # Range should reflect the spread
+        self.assertEqual(result["range"]["plaques"], [5, 15])
+        # With high variance, confidence should not be high
+        self.assertIn(result["confidence"], ["moderate", "low"])
+        # Worst visibility should be "partial"
+        self.assertEqual(result["visibility"], "partial")
 
 
 if __name__ == "__main__":

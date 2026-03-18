@@ -9,6 +9,7 @@ running in Ollama.
 import base64
 import hashlib
 import json
+import statistics
 import tempfile
 import uuid
 from pathlib import Path
@@ -154,6 +155,7 @@ def _demo_key(lat, lon):
 OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "gemma3:4b"
 OLLAMA_TEMPERATURE = 0.1  # Low temperature for consistent, deterministic counting
+NUM_ANALYSIS_RUNS = 3  # Run model multiple times for consensus
 
 _VLM_PROMPT = (
     "This is a Google Street View image of a devotional shrine — a wall-mounted "
@@ -185,10 +187,15 @@ _VLM_PROMPT = (
     "- Graffiti or paint on the wall (only count mounted/attached objects)\n"
     "- Objects on the ground, sidewalk, or street not part of the shrine\n"
     "- Trees, utility poles, wires, or street furniture\n\n"
+    "Also assess image clarity for this task:\n"
+    "- visibility: 'clear' if shrine items are individually distinguishable, "
+    "'partial' if some items are visible but hard to count precisely, "
+    "'poor' if the shrine is too distant, blurry, or obscured to count.\n\n"
     "If the shrine wall is not clearly visible or the image is too unclear to "
-    "count reliably, return all zeros.\n\n"
-    "Return ONLY a JSON object with integer counts:\n"
-    '{"plaques": 0, "flowers": 0, "candles": 0, "pictures": 0, "other": 0, "total": 0}'
+    "count reliably, return all zeros and visibility 'poor'.\n\n"
+    "Return ONLY a JSON object:\n"
+    '{"plaques": 0, "flowers": 0, "candles": 0, "pictures": 0, "other": 0, '
+    '"total": 0, "visibility": "clear"}'
 )
 
 _COUNT_CATEGORIES = ["plaques", "flowers", "candles", "pictures", "other"]
@@ -235,7 +242,91 @@ def _analyze_image_vlm(img):
     for key in _COUNT_CATEGORIES:
         counts[key] = int(counts.get(key, 0))
     counts["total"] = sum(counts[k] for k in _COUNT_CATEGORIES)
+    counts["visibility"] = counts.get("visibility", "clear")
     return counts
+
+
+def _analyze_image_multi(img, num_runs=None):
+    """Run vision model multiple times and compute consensus with confidence."""
+    if num_runs is None:
+        num_runs = NUM_ANALYSIS_RUNS
+
+    runs = []
+    for _ in range(num_runs):
+        try:
+            counts = _analyze_image_vlm(img)
+            runs.append(counts)
+        except Exception as e:
+            runs.append({"error": str(e)})
+
+    valid_runs = [r for r in runs if "error" not in r]
+
+    empty = {k: 0 for k in _COUNT_CATEGORIES}
+    empty["total"] = 0
+
+    if not valid_runs:
+        return {
+            "runs": runs,
+            "median": dict(empty),
+            "range": {k: [0, 0] for k in list(_COUNT_CATEGORIES) + ["total"]},
+            "agreement": 0.0,
+            "confidence": "none",
+            "visibility": "poor",
+        }
+
+    if len(valid_runs) == 1:
+        only = valid_runs[0]
+        return {
+            "runs": runs,
+            "median": {k: only[k] for k in list(_COUNT_CATEGORIES) + ["total"]},
+            "range": {k: [only[k], only[k]] for k in list(_COUNT_CATEGORIES) + ["total"]},
+            "agreement": 0.5,
+            "confidence": "low",
+            "visibility": only.get("visibility", "clear"),
+        }
+
+    # Compute median per category
+    median_counts = {}
+    ranges = {}
+    for k in _COUNT_CATEGORIES:
+        values = [r[k] for r in valid_runs]
+        median_counts[k] = int(statistics.median(values))
+        ranges[k] = [min(values), max(values)]
+
+    median_counts["total"] = sum(median_counts[k] for k in _COUNT_CATEGORIES)
+    total_values = [r["total"] for r in valid_runs]
+    ranges["total"] = [min(total_values), max(total_values)]
+
+    # Compute agreement via coefficient of variation
+    total_mean = statistics.mean(total_values)
+    total_stdev = statistics.stdev(total_values) if len(total_values) > 1 else 0
+    cv = total_stdev / total_mean if total_mean > 0 else 0
+
+    agreement = round(max(0.0, 1.0 - cv), 2)
+
+    if cv < 0.15:
+        confidence = "high"
+    elif cv < 0.4:
+        confidence = "moderate"
+    else:
+        confidence = "low"
+
+    # Aggregate visibility: worst visibility across runs
+    vis_order = {"poor": 0, "partial": 1, "clear": 2}
+    worst_vis = min(
+        (r.get("visibility", "clear") for r in valid_runs),
+        key=lambda v: vis_order.get(v, 2),
+    )
+
+    return {
+        "runs": [{k: r[k] for k in list(_COUNT_CATEGORIES) + ["total", "visibility"]}
+                 for r in valid_runs],
+        "median": median_counts,
+        "range": ranges,
+        "agreement": agreement,
+        "confidence": confidence,
+        "visibility": worst_vis,
+    }
 
 
 # ───────── API Endpoints ─────────
@@ -360,16 +451,19 @@ def auto_align():
 
 @app.route("/analyze-image", methods=["POST"])
 def analyze_image():
-    """Analyze a single panorama image and return categorized counts.
+    """Analyze a single panorama image with multi-run consensus.
 
     Accepts optional 'crop' parameter: {"x": 0.0-1.0, "y": 0.0-1.0, "w": 0.0-1.0, "h": 0.0-1.0}
     to focus analysis on a specific region (e.g. the shrine wall area).
+
+    Returns median counts, individual runs, agreement score, and confidence level.
     """
     data = request.get_json(force=True)
     pano_id = data["pano_id"]
     heading = float(data["heading"])
     pitch = float(data["pitch"])
     crop_pct = data.get("crop")  # Optional: {"x", "y", "w", "h"} as percentages
+    num_runs = int(data.get("num_runs", NUM_ANALYSIS_RUNS))
 
     try:
         img_bytes = _fetch_thumbnail_bytes(
@@ -381,17 +475,25 @@ def analyze_image():
         img = cv2.resize(img, (COMPARE_W, COMPARE_H))
 
         # Store the full image for display
-        img_id = _store_image(_cv_to_png_bytes(img))
+        full_img_id = _store_image(_cv_to_png_bytes(img))
 
         # If a crop region is provided, crop before sending to the model
         analysis_img = img
+        crop_img_id = None
         if crop_pct and all(k in crop_pct for k in ("x", "y", "w", "h")):
             analysis_img = _crop_to_region(img, crop_pct)
+            crop_img_id = _store_image(_cv_to_png_bytes(analysis_img))
 
-        counts = _analyze_image_vlm(analysis_img)
-        counts["image_url"] = f"/image/{img_id}"
+        result = _analyze_image_multi(analysis_img, num_runs)
+        result["image_url"] = f"/image/{full_img_id}"
+        if crop_img_id:
+            result["crop_image_url"] = f"/image/{crop_img_id}"
 
-        return jsonify(counts)
+        # Backward compat: put median counts at top level
+        for k in list(_COUNT_CATEGORIES) + ["total"]:
+            result[k] = result["median"][k]
+
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

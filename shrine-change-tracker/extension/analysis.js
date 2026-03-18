@@ -459,20 +459,31 @@ function computePairResults() {
       else if (d < 0) changes.push(`${d} ${k}`);
     }
 
+    // Use ~ prefix to signal these are estimates
     let summary =
-      `${ca.date}: ${ca.total || 0} items. ` +
-      `${cb.date}: ${cb.total || 0} items.`;
-    if (changes.length) summary += ` Changes: ${changes.join(", ")}.`;
-    else summary += " No changes detected.";
+      `${ca.date}: ~${ca.total || 0} items. ` +
+      `${cb.date}: ~${cb.total || 0} items.`;
+    if (changes.length) summary += ` Estimated changes: ${changes.join(", ")}.`;
+    else summary += " No changes detected by model.";
 
     pairResults.push({
       date_a: ca.date,
       date_b: cb.date,
       counts_a: { plaques: ca.plaques || 0, flowers: ca.flowers || 0, candles: ca.candles || 0, pictures: ca.pictures || 0, other: ca.other || 0, total: ca.total || 0 },
       counts_b: { plaques: cb.plaques || 0, flowers: cb.flowers || 0, candles: cb.candles || 0, pictures: cb.pictures || 0, other: cb.other || 0, total: cb.total || 0 },
+      range_a: ca.range || null,
+      range_b: cb.range || null,
+      confidence_a: ca.confidence || "none",
+      confidence_b: cb.confidence || "none",
+      visibility_a: ca.visibility || "clear",
+      visibility_b: cb.visibility || "clear",
       delta,
       image_a_url: ca.image_url || null,
       image_b_url: cb.image_url || null,
+      crop_image_a_url: ca.crop_image_url || null,
+      crop_image_b_url: cb.crop_image_url || null,
+      runs_a: ca.runs || null,
+      runs_b: cb.runs || null,
       summary,
     });
   }
@@ -491,22 +502,21 @@ function renderSummary() {
   const first = perImageData[0];
   const last = perImageData[perImageData.length - 1];
 
-  let text = `Tracked items from ${first.date} to ${last.date} (${perImageData.length} time periods). `;
-  text += `${first.total || 0} items in ${first.date}, ${last.total || 0} in ${last.date}.`;
+  const highConf = perImageData.filter((d) => d.confidence === "high").length;
+  const modConf = perImageData.filter((d) => d.confidence === "moderate").length;
+  const lowConf = perImageData.filter((d) => d.confidence === "low" || d.confidence === "none").length;
 
-  let totalAdded = 0, totalRemoved = 0;
-  for (const pair of pairResults) {
-    for (const k of ["plaques", "flowers", "candles", "pictures", "other"]) {
-      const d = (pair.delta && pair.delta[k]) || 0;
-      if (d > 0) totalAdded += d;
-      else if (d < 0) totalRemoved += Math.abs(d);
-    }
-  }
-  if (totalAdded > 0 || totalRemoved > 0) {
-    text += ` Net changes: +${totalAdded} added, -${totalRemoved} removed.`;
-  }
+  let text = `Analyzed ${perImageData.length} time periods from ${first.date} to ${last.date}. `;
+  text += `Each image was analyzed ${perImageData[0].runs ? perImageData[0].runs.length : "multiple"} times for consistency. `;
+  text += `Agreement: ${highConf} high, ${modConf} moderate, ${lowConf} low/none.`;
 
   document.getElementById("results-summary").textContent = text;
+}
+
+function _confColor(confidence) {
+  if (confidence === "high") return "#2ed573";
+  if (confidence === "moderate") return "#ffa502";
+  return "#ff4757";
 }
 
 function renderChart() {
@@ -528,7 +538,13 @@ function renderChart() {
   ctx.fillStyle = "#1a1a2e";
   ctx.fillRect(0, 0, W, H);
 
-  const maxItems = Math.max(5, ...perImageData.map((d) => d.total || 0));
+  // Max must account for range maximums too
+  let maxItems = 5;
+  for (const d of perImageData) {
+    const rangeMax = d.range && d.range.total ? d.range.total[1] : (d.total || 0);
+    if (rangeMax > maxItems) maxItems = rangeMax;
+    if ((d.total || 0) > maxItems) maxItems = d.total;
+  }
 
   ctx.strokeStyle = "#333";
   ctx.lineWidth = 1;
@@ -561,14 +577,46 @@ function renderChart() {
     const x = padL + gap + i * (barW + gap);
     const y = padT + cH - barH;
 
-    ctx.fillStyle = d.error ? "#555" : "#4a69bd";
+    // Color by confidence
+    const conf = d.confidence || "none";
+    ctx.fillStyle = d.error ? "#555" : _confColor(conf);
+    ctx.globalAlpha = 0.8;
     ctx.fillRect(x, y, barW, barH);
+    ctx.globalAlpha = 1.0;
     canvas._bars.push({ x, w: barW, idx: i });
 
+    // Draw whiskers for range
+    if (d.range && d.range.total) {
+      const [lo, hi] = d.range.total;
+      const loY = padT + cH - (lo / maxItems) * cH;
+      const hiY = padT + cH - (hi / maxItems) * cH;
+      const cx = x + barW / 2;
+
+      ctx.strokeStyle = "#aaa";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, hiY);
+      ctx.lineTo(cx, loY);
+      ctx.stroke();
+
+      // Whisker caps
+      const capW = barW * 0.4;
+      ctx.beginPath();
+      ctx.moveTo(cx - capW / 2, hiY);
+      ctx.lineTo(cx + capW / 2, hiY);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx - capW / 2, loY);
+      ctx.lineTo(cx + capW / 2, loY);
+      ctx.stroke();
+    }
+
+    // Label: show ~ to signal estimate
     ctx.fillStyle = "#ccc";
     ctx.font = "12px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(`${total}`, x + barW / 2, y - 6);
+    const labelY = d.range && d.range.total ? padT + cH - (d.range.total[1] / maxItems) * cH - 6 : y - 6;
+    ctx.fillText(`~${total}`, x + barW / 2, labelY);
 
     ctx.save();
     ctx.translate(x + barW / 2, padT + cH + 8);
@@ -586,7 +634,7 @@ function renderChart() {
   ctx.fillStyle = "#666";
   ctx.font = "12px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("Items Detected", 0, 0);
+  ctx.fillText("Estimated Items (median)", 0, 0);
   ctx.restore();
 }
 
@@ -610,6 +658,24 @@ document.getElementById("chart-canvas").addEventListener("click", (e) => {
   }
 });
 
+function _confidenceBadge(conf) {
+  const cls = `confidence-badge confidence-${conf || "none"}`;
+  const label = (conf || "none").charAt(0).toUpperCase() + (conf || "none").slice(1);
+  return `<span class="${cls}">${label} agreement</span>`;
+}
+
+function _visibilityBadge(vis) {
+  const cls = `visibility-badge visibility-${vis || "clear"}`;
+  return `<span class="${cls}">${vis || "unknown"} visibility</span>`;
+}
+
+function _runVarianceHTML(runs, category) {
+  if (!runs || runs.length < 2) return "";
+  const vals = runs.filter((r) => !r.error).map((r) => r[category] || 0);
+  if (vals.length < 2) return "";
+  return `<span class="run-values">[${vals.join(", ")}]</span>`;
+}
+
 function renderPairCards() {
   const container = document.getElementById("pairs-container");
   container.innerHTML = "";
@@ -629,21 +695,60 @@ function renderPairCards() {
       if (d > 0) deltaBadges += `<span class="count-badge delta-up">+${d} ${k}</span>`;
       else if (d < 0) deltaBadges += `<span class="count-badge delta-down">${d} ${k}</span>`;
     }
-    if (!deltaBadges) deltaBadges = `<span class="count-badge delta-same">No changes</span>`;
+    if (!deltaBadges) deltaBadges = `<span class="count-badge delta-same">No changes detected</span>`;
 
-    function countsHTML(counts) {
+    function countsHTML(counts, range, runs) {
       return ["plaques", "flowers", "candles", "pictures", "other"]
         .filter((k) => (counts[k] || 0) > 0)
-        .map((k) => `<span class="cat-count">${counts[k]} ${k}</span>`)
+        .map((k) => {
+          let rangeStr = "";
+          if (range && range[k] && range[k][0] !== range[k][1]) {
+            rangeStr = `<span class="cat-range">(${range[k][0]}\u2013${range[k][1]})</span>`;
+          }
+          const variance = _runVarianceHTML(runs, k);
+          return `<span class="cat-count">~${counts[k]} ${k}${rangeStr}</span>`;
+        })
         .join("") || `<span class="cat-count">0 items</span>`;
     }
 
+    // Cropped images (what the model actually saw)
+    let cropImagesHTML = "";
+    if (pair.crop_image_a_url || pair.crop_image_b_url) {
+      const cropA = pair.crop_image_a_url
+        ? `<div class="crop-img-col"><div class="crop-date">${pair.date_a}</div><div class="img-wrapper"><img src="${SERVER}${pair.crop_image_a_url}" alt="Cropped ${pair.date_a}"></div></div>`
+        : "";
+      const cropB = pair.crop_image_b_url
+        ? `<div class="crop-img-col"><div class="crop-date">${pair.date_b}</div><div class="img-wrapper"><img src="${SERVER}${pair.crop_image_b_url}" alt="Cropped ${pair.date_b}"></div></div>`
+        : "";
+      cropImagesHTML = `
+        <div class="crop-image-section">
+          <h4>Analyzed region (what the model saw)</h4>
+          <div class="crop-image-compare">${cropA}${cropB}</div>
+        </div>`;
+    }
+
+    // Full street view images — collapsed by default
     const imgA = pair.image_a_url
       ? `<img src="${SERVER}${pair.image_a_url}" alt="${pair.date_a}">`
       : "";
     const imgB = pair.image_b_url
       ? `<img src="${SERVER}${pair.image_b_url}" alt="${pair.date_b}">`
       : "";
+
+    // Show run-level details
+    let runsDetailHTML = "";
+    if (pair.runs_a || pair.runs_b) {
+      const fmtRuns = (runs) => {
+        if (!runs || runs.length < 2) return "";
+        const vals = runs.filter((r) => !r.error).map((r) => r.total);
+        return `Runs: [${vals.join(", ")}]`;
+      };
+      const ra = fmtRuns(pair.runs_a);
+      const rb = fmtRuns(pair.runs_b);
+      if (ra || rb) {
+        runsDetailHTML = `<div class="run-variance">${pair.date_a}: ${ra || "n/a"} &nbsp;|&nbsp; ${pair.date_b}: ${rb || "n/a"}</div>`;
+      }
+    }
 
     card.innerHTML = `
       <div class="pair-header">
@@ -653,29 +758,138 @@ function renderPairCards() {
       <p class="pair-summary">${pair.summary}</p>
       <div class="pair-counts-row">
         <div class="counts-col">
-          <div class="counts-label">${pair.date_a} (${ca.total || 0} items)</div>
-          <div class="counts-cats">${countsHTML(ca)}</div>
+          <div class="counts-col-header">
+            <span class="counts-label">${pair.date_a} (~${ca.total || 0} items)</span>
+            ${_confidenceBadge(pair.confidence_a)}
+            ${_visibilityBadge(pair.visibility_a)}
+          </div>
+          <div class="counts-cats">${countsHTML(ca, pair.range_a, pair.runs_a)}</div>
         </div>
         <div class="counts-col">
-          <div class="counts-label">${pair.date_b} (${cb.total || 0} items)</div>
-          <div class="counts-cats">${countsHTML(cb)}</div>
+          <div class="counts-col-header">
+            <span class="counts-label">${pair.date_b} (~${cb.total || 0} items)</span>
+            ${_confidenceBadge(pair.confidence_b)}
+            ${_visibilityBadge(pair.visibility_b)}
+          </div>
+          <div class="counts-cats">${countsHTML(cb, pair.range_b, pair.runs_b)}</div>
         </div>
       </div>
-      <div class="pair-images-stacked">
-        <div class="pair-img-full">
-          <h4>${pair.date_a}</h4>
-          <div class="img-wrapper">${imgA}</div>
-        </div>
-        <div class="pair-img-full">
-          <h4>${pair.date_b}</h4>
-          <div class="img-wrapper">${imgB}</div>
-        </div>
+      ${runsDetailHTML}
+      <div class="pair-images-section">
+        ${cropImagesHTML}
+        <details class="full-images-section">
+          <summary>Show full Street View images (context)</summary>
+          <div class="pair-images-stacked">
+            <div class="pair-img-full">
+              <h4>${pair.date_a}</h4>
+              <div class="img-wrapper">${imgA}</div>
+            </div>
+            <div class="pair-img-full">
+              <h4>${pair.date_b}</h4>
+              <div class="img-wrapper">${imgB}</div>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="verify-row">
+        <input type="checkbox" id="verify-${idx}" data-pair-idx="${idx}">
+        <label for="verify-${idx}">I have manually verified these counts are reasonable</label>
       </div>
     `;
 
     container.appendChild(card);
   });
 }
+
+// ── Data Export ──
+function exportCSV() {
+  if (perImageData.length === 0) return;
+  const cats = ["plaques", "flowers", "candles", "pictures", "other", "total"];
+  const header = [
+    "date", "pano_id",
+    ...cats.map((c) => `${c}_median`),
+    ...cats.map((c) => `${c}_min`),
+    ...cats.map((c) => `${c}_max`),
+    "confidence", "agreement", "visibility", "num_runs",
+    ...cats.map((c) => `${c}_run_values`),
+    "human_verified",
+  ];
+  const rows = [header.join(",")];
+
+  perImageData.forEach((d, i) => {
+    const pano = panoramas[i];
+    const verified = document.querySelector(`input[data-pair-idx]`)
+      ? "false"
+      : "false";
+    const run_count = d.runs ? d.runs.length : 1;
+    const row = [
+      d.date,
+      pano ? pano.pano_id : "",
+      ...cats.map((c) => d.median ? d.median[c] : (d[c] || 0)),
+      ...cats.map((c) => d.range && d.range[c] ? d.range[c][0] : (d[c] || 0)),
+      ...cats.map((c) => d.range && d.range[c] ? d.range[c][1] : (d[c] || 0)),
+      d.confidence || "unknown",
+      d.agreement || "",
+      d.visibility || "",
+      run_count,
+      ...cats.map((c) =>
+        d.runs
+          ? `"${d.runs.filter((r) => !r.error).map((r) => r[c]).join(";")}"` : ""
+      ),
+      verified,
+    ];
+    rows.push(row.join(","));
+  });
+
+  const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `shrine_analysis_${LAT.toFixed(4)}_${LNG.toFixed(4)}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportJSON() {
+  if (perImageData.length === 0) return;
+  const exportData = {
+    location: { lat: LAT, lng: LNG, heading: HEADING, pitch: PITCH },
+    model: "gemma3:4b",
+    num_runs_per_image: perImageData[0].runs ? perImageData[0].runs.length : 1,
+    crop_region: cropRegion,
+    analysis_date: new Date().toISOString(),
+    disclaimer: "These counts are model estimates. Each image was analyzed multiple times. "
+      + "Results must be manually verified before use in research.",
+    images: perImageData.map((d, i) => ({
+      date: d.date,
+      pano_id: panoramas[i] ? panoramas[i].pano_id : null,
+      median_counts: d.median || { plaques: d.plaques, flowers: d.flowers, candles: d.candles, pictures: d.pictures, other: d.other, total: d.total },
+      ranges: d.range || null,
+      confidence: d.confidence || "unknown",
+      agreement: d.agreement || null,
+      visibility: d.visibility || null,
+      individual_runs: d.runs || null,
+    })),
+    pair_comparisons: pairResults.map((p) => ({
+      from: p.date_a,
+      to: p.date_b,
+      delta: p.delta,
+      confidence_from: p.confidence_a,
+      confidence_to: p.confidence_b,
+    })),
+  };
+
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `shrine_analysis_${LAT.toFixed(4)}_${LNG.toFixed(4)}_${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById("btn-export-csv").addEventListener("click", exportCSV);
+document.getElementById("btn-export-json").addEventListener("click", exportJSON);
 
 // ── Navigation ──
 document.getElementById("btn-to-step2").addEventListener("click", () => goToStep(2));

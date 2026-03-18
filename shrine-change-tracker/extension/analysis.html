@@ -97,10 +97,28 @@
       <!-- Results (visible after analysis) -->
       <div id="results-section" class="hidden">
         <h2>Results</h2>
+
+        <div class="results-disclaimer">
+          <strong>Important:</strong> These counts are <em>estimates</em> produced by a local vision model (Gemma 3 4B).
+          Each image was analyzed multiple times to measure consistency. Results with low agreement
+          between runs are unreliable. A human must verify all counts before using this data in research.
+          Bars show the median of multiple runs; whiskers show the range across runs.
+        </div>
+
         <p id="results-summary" class="step-desc"></p>
 
+        <div class="results-actions">
+          <button id="btn-export-csv" class="btn btn-secondary btn-sm">Export CSV</button>
+          <button id="btn-export-json" class="btn btn-secondary btn-sm">Export Raw JSON</button>
+        </div>
+
         <div id="chart-section">
-          <h3>Items Detected Over Time</h3>
+          <h3>Estimated Items Over Time <span class="chart-subtitle">(median of multiple model runs — verify manually)</span></h3>
+          <div class="chart-legend">
+            <span class="legend-item"><span class="legend-swatch" style="background:#2ed573"></span> High agreement</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#ffa502"></span> Moderate agreement</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#ff4757"></span> Low agreement</span>
+          </div>
           <div id="chart-container" class="chart-container">
             <canvas id="chart-canvas"></canvas>
           </div>
